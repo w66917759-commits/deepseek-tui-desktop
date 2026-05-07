@@ -6,7 +6,6 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
   getApiKey: (provider) => ipcRenderer.invoke("api-key:get", provider),
   saveApiKey: (payload) => ipcRenderer.invoke("api-key:save", payload),
   getCustomization: (settings) => ipcRenderer.invoke("customization:get", settings),
-  saveSkillTemplate: (payload) => ipcRenderer.invoke("skills:save-template", payload),
   createSkillTemplate: (payload) => ipcRenderer.invoke("skills:create-template", payload),
   importSkillDirectory: (payload) => ipcRenderer.invoke("skills:import-directory", payload),
   saveMcpConfig: (payload) => ipcRenderer.invoke("mcp:save-config", payload),
@@ -22,6 +21,7 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
   chooseFile: (filters) => ipcRenderer.invoke("dialog:choose-file", filters),
   openWorkspaceEditor: (options) => ipcRenderer.invoke("editor:open", options),
   checkRuntime: (settings) => ipcRenderer.invoke("runtime:check", settings),
+  getRuntimeSnapshot: () => ipcRenderer.invoke("runtime:snapshot"),
   getGitStatus: (workspacePath) => ipcRenderer.invoke("git:status", workspacePath),
   initGitRepository: (workspacePath) => ipcRenderer.invoke("git:init", workspacePath),
   setGitRemote: (payload) => ipcRenderer.invoke("git:set-remote", payload),
@@ -51,6 +51,16 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
     const listener = (_event, exit) => callback(exit);
     ipcRenderer.on("terminal:exit", listener);
     return () => ipcRenderer.removeListener("terminal:exit", listener);
+  },
+  onRuntimeSnapshot: (callback) => {
+    const listener = (_event, snapshot) => callback(snapshot);
+    ipcRenderer.on("runtime:snapshot", listener);
+    return () => ipcRenderer.removeListener("runtime:snapshot", listener);
+  },
+  onRuntimeEvent: (callback) => {
+    const listener = (_event, event) => callback(event);
+    ipcRenderer.on("runtime:event", listener);
+    return () => ipcRenderer.removeListener("runtime:event", listener);
   },
   onRemoteStatus: (callback) => {
     const listener = (_event, status) => callback(status);

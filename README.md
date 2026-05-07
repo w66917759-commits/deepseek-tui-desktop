@@ -4,7 +4,7 @@ Desktop harness for the DeepSeek TUI coding agent. The app follows a Codex-style
 
 ## Why Electron First
 
-The current machine has Node/npm ready, while Rust/Cargo is not installed. Electron also lets the app embed a PTY and bundle the npm `deepseek-tui` wrapper, which downloads the upstream macOS binary during install. Tauri can stay on the roadmap once a Rust build chain and deeper native integration are available.
+The current machine has Node/npm ready, while Rust/Cargo is not installed. Electron also lets the app embed a PTY and bundle the npm `deepseek-tui` wrapper, which downloads upstream platform binaries during install. Tauri can stay on the roadmap once a Rust build chain and deeper native integration are available.
 
 ## Run Locally
 
@@ -46,6 +46,34 @@ To verify the debug-signed app directory:
 codesign --verify --deep --strict --verbose=2 "release/mac-arm64/DeepSeek TUI Desktop.app"
 ```
 
+## Build A Windows Test Installer
+
+```bash
+npm run dist:win:test
+```
+
+This creates or reuses a local self-signed test certificate at `build/certs/deepseek-tui-desktop-local-test.pfx`, prefetches the upstream Windows x64 `deepseek.exe` and `deepseek-tui.exe`, builds the renderer, and creates a signed NSIS installer:
+
+```text
+release/DeepSeek TUI Desktop-0.1.0-win-x64-setup.exe
+```
+
+The certificate is intentionally not trusted and is ignored by git. Testers should expect Windows SmartScreen / unknown publisher warnings unless they import the matching local test certificate or you replace it with a real code-signing certificate later.
+
+Useful lower-level commands:
+
+```bash
+npm run cert:win:self-signed
+npm run prepare:win-runtime
+npm run dist:win
+```
+
+To override the local-test PFX password:
+
+```bash
+DEEPSEEK_TUI_WIN_CERT_PASSWORD="your-local-password" npm run dist:win:test
+```
+
 ## Harness Scope
 
 - Native Electron app window with a Codex-like conversation UI.
@@ -62,7 +90,7 @@ codesign --verify --deep --strict --verbose=2 "release/mac-arm64/DeepSeek TUI De
 - Skills drawer: preset Skills remain available, and users can create new `SKILL.md` workflows or import external Skill directories such as a full Superpowers skill pack.
 - Scheduled Tasks screen: create a simple daily Agent task with only the prompt, workspace, run time, and enable toggle exposed. The desktop app maintains the local runner and logs while keeping API keys in its local secret store instead of writing secrets into schedule files.
 - Preset MCP servers: Playwright, Context7, Filesystem, MCP Remote, GitHub, Postgres, Sequential Thinking, Memory, Slack, Notion, Sentry, Figma Developer, Stripe, Puppeteer, Brave Search, Google Maps, and Panel / 1Panel. Enabled presets are written to an MCP JSON file under Electron `userData` and injected by the harness.
-- MCP drawer includes startup instructions, command preview, auth/env hints, category filters, weekly npm download badges, and safety labels. MCP service secrets are read from environment variables; DeepSeek/NVIDIA API keys are stored in the desktop app's local secret store for launches and scheduled tasks.
+- MCP tool page includes startup instructions, command preview, auth/env hints, category filters, weekly npm download badges, safety labels, and an add-only custom MCP form. MCP service secrets are read from environment variables; DeepSeek/NVIDIA API keys are stored in the desktop app's local secret store for launches and scheduled tasks.
 - Optional token-protected mobile bridge for viewing desktop task progress from a phone app, subscribing to live events, and remotely controlling the running desktop session.
 - Optional update push notification endpoint that can be called by an updater service or release workflow to notify the desktop UI and connected mobile clients.
 
@@ -90,6 +118,6 @@ Desktop admin calls use `Authorization: Bearer <bridge-token>` or `x-deepseek-br
 1. Store API credentials in macOS Keychain / Windows Credential Manager instead of session-only env fields.
 2. Add per-MCP credential forms and connection tests for token-based presets.
 3. Optionally reconcile local desktop history with upstream `deepseek sessions --json` if upstream exposes stable structured output.
-4. Bundle signed universal macOS and Windows installers through CI.
+4. Replace local Windows test signing with a real trusted certificate before public release.
 5. Add a cloud relay / APNs-FCM layer for phone access outside the same LAN.
 6. Split the harness into a standalone local service once the upstream runtime exposes a stable structured API.

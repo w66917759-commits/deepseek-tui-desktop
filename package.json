@@ -8,12 +8,17 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build",
     "test": "node --test test/*.test.cjs",
-    "dist:mac": "npm run build && electron-builder --mac dmg --arm64"
+    "prepare:win-runtime": "node scripts/prepare-win-runtime.cjs",
+    "cert:win:self-signed": "node scripts/create-win-test-cert.cjs",
+    "test:live:deepseek": "DEEPSEEK_LIVE_TEST=1 node --test test/liveDeepSeekAgent.test.cjs",
+    "dist:mac": "npm run build && electron-builder --mac dmg --arm64",
+    "dist:win": "npm run prepare:win-runtime && npm run build && electron-builder --win nsis --x64 -c.npmRebuild=false",
+    "dist:win:test": "node scripts/dist-win-test.cjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "deepseek-tui": "0.8.14",
+    "deepseek-tui": "0.8.16",
     "lucide-react": "^0.468.0",
     "node-pty": "^1.1.0",
     "react": "^18.3.1",
@@ -64,6 +69,35 @@
     },
     "dmg": {
       "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "requestedExecutionLevel": "asInvoker",
+      "verifyUpdateCodeSignature": false,
+      "signtoolOptions": {
+        "publisherName": "DeepSeek TUI Desktop Local Test",
+        "signingHashAlgorithms": [
+          "sha256"
+        ]
+      }
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-win-${arch}-setup.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "${productName}",
+      "deleteAppDataOnUninstall": false
     }
   }
 }

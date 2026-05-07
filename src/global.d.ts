@@ -8,7 +8,6 @@ declare global {
 	      getApiKey: (provider?: ProviderMode) => Promise<string>;
 	      saveApiKey: (payload: ApiKeySavePayload) => Promise<ApiKeySaveResult>;
 	      getCustomization: (settings: DesktopSettings) => Promise<CustomizationDraft>;
-      saveSkillTemplate: (payload: SkillTemplateSavePayload) => Promise<TemplateSaveResult>;
       createSkillTemplate: (payload: SkillCreatePayload) => Promise<TemplateSaveResult>;
       importSkillDirectory: (payload: SkillImportPayload) => Promise<SkillImportResult>;
       saveMcpConfig: (payload: McpConfigSavePayload) => Promise<McpConfigSaveResult>;
@@ -22,9 +21,10 @@ declare global {
       uninstallAutomation: (payload: AutomationRunPayload) => Promise<AutomationActionResult>;
       chooseDirectory: () => Promise<string>;
       chooseFile: (filters?: Array<{ name: string; extensions: string[] }>) => Promise<string>;
-      openWorkspaceEditor: (options: OpenWorkspaceEditorOptions) => Promise<OpenWorkspaceEditorResult>;
-      checkRuntime: (settings?: Partial<DesktopSettings>) => Promise<RuntimeCheck>;
-      getGitStatus: (workspacePath: string) => Promise<GitStatus>;
+	      openWorkspaceEditor: (options: OpenWorkspaceEditorOptions) => Promise<OpenWorkspaceEditorResult>;
+	      checkRuntime: (settings?: Partial<DesktopSettings>) => Promise<RuntimeCheck>;
+	      getRuntimeSnapshot: () => Promise<RuntimeSnapshot>;
+	      getGitStatus: (workspacePath: string) => Promise<GitStatus>;
       initGitRepository: (workspacePath: string) => Promise<GitActionResult>;
       setGitRemote: (payload: GitRemotePayload) => Promise<GitActionResult>;
       fetchGitRepository: (payload: GitWorkspacePayload) => Promise<GitActionResult>;
@@ -44,10 +44,12 @@ declare global {
       startRemotePairing: () => Promise<RemotePairingResult>;
       revokeRemoteDevice: (deviceId: string) => Promise<RemoteAuthResult>;
       pushUpdateNotice: (payload: UpdatePushPayload) => Promise<{ ok: boolean; error?: string; notice?: UpdateNotice }>;
-      onTerminalData: (callback: (data: string) => void) => () => void;
-      onTerminalExit: (callback: (exit: { exitCode: number; signal?: number }) => void) => () => void;
-      onRemoteStatus: (callback: (status: RemoteBridgeStatus) => void) => () => void;
-    };
+	      onTerminalData: (callback: (data: string) => void) => () => void;
+	      onTerminalExit: (callback: (exit: { exitCode: number; signal?: number }) => void) => () => void;
+	      onRuntimeSnapshot: (callback: (snapshot: RuntimeSnapshot) => void) => () => void;
+	      onRuntimeEvent: (callback: (event: RuntimeEvent) => void) => () => void;
+	      onRemoteStatus: (callback: (status: RemoteBridgeStatus) => void) => () => void;
+	    };
   }
 
   type LaunchAction = "tui" | "continue" | "doctor" | "setup" | "mcp-init" | "sessions" | "exec" | "plan" | "yolo";
@@ -127,12 +129,6 @@ declare global {
     mcpConfigSource: "generated" | "custom" | "missing";
     mcpConfigText: string;
     mcpConfigError?: string;
-  }
-
-  interface SkillTemplateSavePayload {
-    settings: DesktopSettings;
-    skillId: string;
-    content: string;
   }
 
   interface SkillCreatePayload {
@@ -302,8 +298,8 @@ declare global {
     tasks: AutomationTask[];
   }
 
-  interface RuntimeCheck {
-    selected: string;
+	  interface RuntimeCheck {
+	    selected: string;
     selectedExists: boolean;
     bundled: string;
     bundledExists: boolean;
@@ -311,10 +307,54 @@ declare global {
     systemExists: boolean;
     custom: string;
     customExists: boolean;
-    version: string;
-  }
+	    version: string;
+	  }
 
-  interface GitRemoteInfo {
+	  type RuntimeRunStatus = "idle" | "running" | "completed" | "failed" | "stopped";
+	  type RuntimeAgentStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+	  interface RuntimeAgent {
+	    id: string;
+	    name: string;
+	    status: RuntimeAgentStatus;
+	    summary: string;
+	    source: "pty" | "runtime-api";
+	    createdAt: string;
+	    updatedAt: string;
+	  }
+
+	  interface RuntimeEvent {
+	    id: string;
+	    type: string;
+	    label: string;
+	    detail: string;
+	    at: string;
+	  }
+
+	  interface RuntimeSnapshot {
+	    status: RuntimeRunStatus;
+	    source: "none" | "pty" | "runtime-api";
+	    sessionId: string;
+	    mode: string;
+	    workspacePath: string;
+	    pid: number;
+	    command: string;
+	    args: string[];
+	    startedAt: string;
+	    updatedAt: string;
+	    lastExit: { exitCode: number; signal?: string; exitedAt: string } | null;
+	    agents: RuntimeAgent[];
+	    counts: {
+	      total: number;
+	      running: number;
+	      completed: number;
+	      failed: number;
+	      cancelled: number;
+	    };
+	    events: RuntimeEvent[];
+	  }
+
+	  interface GitRemoteInfo {
     name: string;
     fetchUrl: string;
     pushUrl: string;

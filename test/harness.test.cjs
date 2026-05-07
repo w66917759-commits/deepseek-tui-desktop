@@ -86,7 +86,7 @@ test("settings persistence sanitizes unsafe fields and fills runtime defaults", 
   assert.equal(settings.mobileBridgeHost, "0.0.0.0");
   assert.equal(settings.mobileBridgePort, 8765);
   assert.equal(settings.mobileBridgeToken.length >= 20, true);
-  assert.deepEqual(settings.enabledSkills, ["superpowers", "ui-ux-design"]);
+  assert.deepEqual(settings.enabledSkills, ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"]);
   assert.equal(settings.mcpEnabled, true);
   assert.equal(Object.hasOwn(settings, "apiKey"), false);
   assert.equal(Object.hasOwn(settings, "agentPrompt"), false);
@@ -94,6 +94,66 @@ test("settings persistence sanitizes unsafe fields and fills runtime defaults", 
   const rawSettings = fs.readFileSync(path.join(ctx.userData, "settings.json"), "utf8");
   assert.equal(rawSettings.includes("sk-should-not-be-stored-here"), false);
   assert.equal(rawSettings.includes("hidden prompt"), false);
+});
+
+test("settings default and legacy sub-agent limits migrate to DeepSeek default", (t) => {
+  const ctx = createHarnessContext();
+  t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
+
+  const missingLimit = ctx.harness.writeSettings({
+    language: "en",
+    enabledSkills: ["superpowers"]
+  });
+  assert.equal(missingLimit.maxSubagents, 10);
+
+  const legacyLimit = ctx.harness.writeSettings({
+    ...defaultSettings(),
+    maxSubagents: 3
+  });
+  assert.equal(legacyLimit.maxSubagents, 10);
+
+  const customLimit = ctx.harness.writeSettings({
+    ...defaultSettings(),
+    maxSubagents: 7
+  });
+  assert.equal(customLimit.maxSubagents, 7);
+
+  const legacyPlan = ctx.harness.buildLaunchPlan({
+    workspacePath: ctx.workspace,
+    launchAction: "exec",
+    agentPrompt: "Ping",
+    maxSubagents: 3
+  });
+  assert.equal(legacyPlan.env.DEEPSEEK_MAX_SUBAGENTS, "10");
+});
+
+test("default conversation skills include daily task and Skill download guidance", (t) => {
+  const ctx = createHarnessContext();
+  t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
+
+  const settings = ctx.harness.writeSettings({
+    ...defaultSettings(),
+    workspacePath: ctx.workspace,
+    binaryMode: "bundled"
+  });
+  assert.deepEqual(settings.enabledSkills, ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"]);
+
+  const plan = ctx.harness.buildLaunchPlan({
+    workspacePath: ctx.workspace,
+    launchAction: "exec",
+    agentPrompt: "Create a daily task and download a Skill."
+  });
+
+  assert.equal(plan.env.DEEPSEEK_DESKTOP_ENABLED_SKILLS, "superpowers,ui-ux-design,cron-scheduler,skill-downloader");
+  assert.equal(
+    fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "cron-scheduler", "scripts", "write-cron-file.mjs")),
+    true
+  );
+  const skillDownloaderPath = path.join(plan.env.DEEPSEEK_SKILLS_DIR, "skill-downloader", "SKILL.md");
+  assert.equal(fs.existsSync(skillDownloaderPath), true);
+  const skillDownloader = fs.readFileSync(skillDownloaderPath, "utf8");
+  assert.match(skillDownloader, /curl -fsSL/);
+  assert.match(skillDownloader, /Do not synthesize/);
 });
 
 test("launch plans include MCP, skills, saved credentials, and plan-mode prompt", (t) => {
@@ -199,6 +259,43 @@ test("desktop harness mode is opt-in for launch plans", (t) => {
     harnessEnabled: true
   });
   assert.equal(harnessPlan.env.DEEPSEEK_DESKTOP_HARNESS, "1");
+});
+
+test("process stream toggle writes DeepSeek reasoning managed config", (t) => {
+  const ctx = createHarnessContext();
+  t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
+
+  const offPlan = ctx.harness.buildLaunchPlan({
+    workspacePath: ctx.workspace,
+    launchAction: "exec",
+    agentPrompt: "Ping",
+    harnessEnabled: false
+  });
+
+  assert.equal(
+    offPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH,
+    path.join(ctx.userData, "deepseek.desktop.managed.toml")
+  );
+  assert.match(
+    fs.readFileSync(offPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH, "utf8"),
+    /reasoning_effort = "off"/
+  );
+
+  const streamPlan = ctx.harness.buildLaunchPlan({
+    workspacePath: ctx.workspace,
+    launchAction: "exec",
+    agentPrompt: "Ping",
+    harnessEnabled: true
+  });
+
+  assert.equal(
+    streamPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH,
+    path.join(ctx.userData, "deepseek.desktop.managed.toml")
+  );
+  assert.match(
+    fs.readFileSync(streamPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH, "utf8"),
+    /reasoning_effort = "max"/
+  );
 });
 
 test("automation cron files keep secrets out and persist runner metadata", (t) => {

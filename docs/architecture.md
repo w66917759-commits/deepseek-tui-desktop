@@ -39,9 +39,13 @@ flowchart LR
 
 ## Packaging
 
-The npm `deepseek-tui` package downloads GitHub release binaries during `postinstall`. Electron Builder packages `node_modules/deepseek-tui/bin/downloads/**` outside `app.asar` so macOS can execute the binary from the installed app bundle.
+The npm `deepseek-tui` package downloads GitHub release binaries during `postinstall`. Electron Builder packages `node_modules/deepseek-tui/bin/downloads/**` outside `app.asar` so the installed app can execute the bundled runtime.
+
+Windows test packaging runs `scripts/prepare-win-runtime.cjs` before Electron Builder. This matters for cross-building from macOS because the upstream npm postinstall only downloads the current platform's binary. The preflight script downloads and SHA256-verifies the Windows x64 `deepseek.exe` and `deepseek-tui.exe` assets into the same `node_modules/deepseek-tui/bin/downloads/` directory that the harness resolves at runtime.
 
 `node-pty` is also unpacked because it contains a native module.
+
+Windows x64 installers use NSIS. Local tester builds can be signed with the generated self-signed PFX under `build/certs/`; the PFX is ignored by git and is not suitable for public distribution.
 
 ## Known Constraints
 
@@ -50,4 +54,4 @@ The npm `deepseek-tui` package downloads GitHub release binaries during `postins
 - Token-based MCP presets rely on environment variables such as `GITHUB_PERSONAL_ACCESS_TOKEN`, `NOTION_TOKEN`, `SLACK_BOT_TOKEN`, `STRIPE_SECRET_KEY`, and `PANEL_ACCESS_TOKEN`.
 - The mobile bridge is a local/LAN interface, not a cloud relay. Remote access outside the LAN still needs a relay, tunnel, or native push provider layer.
 - The login service is local-first: it records the desktop account id, paired phone devices, and device-token hashes under Electron `userData`. A production push service can reuse the same account/device contract behind a cloud relay.
-- Unsigned DMGs are suitable for local testing only. Public distribution needs Developer ID signing and notarization.
+- Unsigned or locally self-signed packages are suitable for local testing only. Public distribution needs Developer ID signing/notarization on macOS and a trusted Windows code-signing certificate.

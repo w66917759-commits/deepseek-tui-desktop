@@ -445,7 +445,8 @@ label {
   align-items: center;
   justify-self: start;
   gap: 6px;
-  width: min(620px, 100%);
+  width: auto;
+  max-width: min(280px, 100%);
   min-width: 0;
   min-height: 28px;
   padding: 0 9px;
@@ -507,6 +508,34 @@ label {
   color: #0e8f6e;
 }
 
+.branch-status-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 170px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #bad0ff;
+  border-radius: 8px;
+  background: #f5f8ff;
+  color: #1d3f8f;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.branch-status-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.branch-status-button.missing {
+  border-color: #d8dde3;
+  background: #f8fafb;
+  color: #667085;
+}
+
 .view-switch,
 .agent-mode-switch {
   display: inline-flex;
@@ -538,7 +567,7 @@ label {
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
 }
 
-.harness-toggle {
+.process-stream-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -551,7 +580,7 @@ label {
   font-weight: 800;
 }
 
-.harness-toggle.active {
+.process-stream-toggle.active {
   border-color: rgba(23, 166, 127, 0.48);
   background: rgba(23, 166, 127, 0.1);
   color: #0f7f62;
@@ -588,6 +617,11 @@ label {
   overflow: hidden;
 }
 
+.conversation-layout.process-panel-collapsed {
+  grid-template-columns: minmax(0, 940px);
+  justify-content: center;
+}
+
 .chat-output-list {
   align-content: start;
   width: 100%;
@@ -596,6 +630,10 @@ label {
   overflow-x: hidden;
   overflow-y: auto;
   padding: 0;
+}
+
+.conversation-layout.process-panel-collapsed .chat-output-list {
+  max-width: 940px;
 }
 
 .view-content {
@@ -773,8 +811,13 @@ label {
   flex-wrap: wrap;
 }
 
-.agent-mode-switch {
-  margin-right: auto;
+.composer-actions .branch-status-button,
+.composer-actions .workspace-picker-button {
+  min-height: 38px;
+}
+
+.composer-actions .workspace-picker-button {
+  max-width: min(240px, 100%);
 }
 
 .model-picker {
@@ -2303,6 +2346,176 @@ button.skill-card:hover {
   color: #b7791f;
 }
 
+.status-chip.runtime-running,
+.status-chip.agent-running,
+.status-chip.agent-queued {
+  background: #e8f2ff;
+  color: #0b63ce;
+}
+
+.status-chip.runtime-completed,
+.status-chip.agent-completed {
+  background: #dff6ef;
+  color: #0e8f6e;
+}
+
+.status-chip.runtime-failed,
+.status-chip.agent-failed {
+  background: #fff1f2;
+  color: #c61b3f;
+}
+
+.status-chip.runtime-stopped,
+.status-chip.agent-cancelled {
+  background: #f2f4f7;
+  color: #475467;
+}
+
+.agents-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.runtime-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.runtime-summary-grid article {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.runtime-summary-grid svg {
+  color: #2563eb;
+}
+
+.runtime-summary-grid span,
+.runtime-meta-row,
+.runtime-counts,
+.agent-runtime-row small,
+.runtime-events li span,
+.runtime-events li small {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.runtime-summary-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #101828;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 0 2px;
+}
+
+.runtime-meta-row strong {
+  color: #344054;
+}
+
+.runtime-counts {
+  padding: 10px 12px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  background: #f8fafb;
+  font-weight: 700;
+}
+
+.agent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-runtime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.agent-runtime-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.agent-runtime-main > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-runtime-row strong,
+.agent-runtime-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-events {
+  display: grid;
+  gap: 8px;
+}
+
+.tool-section-head.compact {
+  margin-top: 2px;
+}
+
+.runtime-events ol {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runtime-events li {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: baseline;
+  padding: 9px 10px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.runtime-events li strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #101828;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-events li small {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* macOS Human Interface pass: neutral materials, split-view hierarchy, and native-feeling controls. */
 body {
   background:
@@ -2560,6 +2773,18 @@ label {
   border-color: rgba(52, 199, 89, 0.30);
   background: rgba(52, 199, 89, 0.13);
   color: #1f8f45;
+}
+
+.branch-status-button {
+  border-color: rgba(0, 122, 255, 0.24);
+  background: rgba(0, 122, 255, 0.12);
+  color: #185abc;
+}
+
+.branch-status-button.missing {
+  border-color: rgba(60, 60, 67, 0.10);
+  background: var(--mac-control);
+  color: var(--mac-secondary-label);
 }
 
 .global-api-key-field {

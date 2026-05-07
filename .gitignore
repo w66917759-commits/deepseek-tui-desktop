@@ -7,3 +7,6 @@ release/
 coverage/
 .env
 .env.local
+build/certs/*.crt
+build/certs/*.key
+build/certs/*.pfx

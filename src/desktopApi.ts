@@ -11,11 +11,11 @@ const previewSettings: DesktopSettings = {
   skillsEnabled: true,
   mcpEnabled: false,
   allowShell: false,
-  maxSubagents: 3,
+  maxSubagents: 10,
   harnessEnabled: false,
   launchAction: "tui",
   rememberWorkspace: true,
-  enabledSkills: ["superpowers", "ui-ux-design"],
+  enabledSkills: ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"],
   enabledMcpServers: [],
   mobileBridgeEnabled: false,
   mobileBridgeHost: "127.0.0.1",
@@ -79,6 +79,21 @@ const previewSkillTemplateDefaults: Record<string, string> = {
     "- Prefer outputs under `.deepseek/cron/` and logs under `.deepseek/logs/`.",
     "- Run `node \"$DEEPSEEK_SKILLS_DIR/cron-scheduler/scripts/write-cron-file.mjs\" --name \"daily-health-check\" --schedule \"0 5 * * *\" --command \"npm run health:check\" --cwd \"$PWD\" --timezone \"Asia/Shanghai\"`.",
     "- Report the generated file path, schedule, command, log path, and whether installation was skipped."
+  ].join("\n"),
+  "skill-downloader": [
+    "---",
+    "name: skill-downloader",
+    "description: Use when the user asks to download, install, import, fetch, or update a Skill from a URL, GitHub raw file, local path, or archive.",
+    "---",
+    "",
+    "# Skill Downloader",
+    "",
+    "Use this skill when a user asks to download or install a Skill during a desktop Agent conversation.",
+    "",
+    "- Do not synthesize remote Skill content. Download or copy the source bytes first, then verify the saved file.",
+    "- Prefer `curl -fsSL \"<skill-url>\" -o \".deepseek/skills/<skill-id>/SKILL.md\"` for URL sources.",
+    "- Verify with `test -s` and inspect the first lines for `name:` and `description:` frontmatter.",
+    "- Report the source URL, destination path, and verification result."
   ].join("\n")
 };
 
@@ -88,6 +103,29 @@ let previewMcpConfigText = "";
 let previewApiKeys: Record<ProviderMode, string> = {
   deepseek: "",
   "nvidia-nim": ""
+};
+
+let previewRuntimeSnapshot: RuntimeSnapshot = {
+  status: "idle",
+  source: "none",
+  sessionId: "",
+  mode: "",
+  workspacePath: "",
+  pid: 0,
+  command: "",
+  args: [],
+  startedAt: "",
+  updatedAt: new Date().toISOString(),
+  lastExit: null,
+  agents: [],
+  counts: {
+    total: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0
+  },
+  events: []
 };
 
 function previewSkillName(id: string) {
@@ -278,6 +316,8 @@ function previewMcpTests(settings: DesktopSettings): McpServerTest[] {
 function createPreviewBridge(): Window["deepseekDesktop"] {
   const listeners = new Set<(data: string) => void>();
   const exits = new Set<(exit: { exitCode: number; signal?: number }) => void>();
+  const runtimeSnapshots = new Set<(snapshot: RuntimeSnapshot) => void>();
+  const runtimeEvents = new Set<(event: RuntimeEvent) => void>();
   const remoteStatuses = new Set<(status: RemoteBridgeStatus) => void>();
   let previewAuth: RemoteAuthState = {
     desktopId: "desktop_preview",
@@ -348,16 +388,6 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
         mcpConfigSource: previewMcpConfigPath ? "custom" : "generated",
         mcpConfigText: previewMcpConfigText || JSON.stringify(previewMcpConfig(nextSettings), null, 2),
         mcpConfigError: ""
-      };
-    },
-    saveSkillTemplate: async (payload) => {
-      previewSkillTemplates[payload.skillId] = payload.content;
-      const root = "/browser-preview/userData/skills";
-      return {
-        ok: true,
-        skill: previewSkillDraft(payload.skillId, root, payload.content, "file"),
-        path: `${root}/${payload.skillId}/SKILL.md`,
-        skillRoot: root
       };
     },
     createSkillTemplate: async (payload) => {
@@ -508,8 +538,9 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
         ok: false,
         error: "Choose a workspace before opening an editor."
       },
-    checkRuntime: async (settings) => previewRuntime(settings),
-    getGitStatus: async (workspacePath) => previewGitStatus(workspacePath),
+	    checkRuntime: async (settings) => previewRuntime(settings),
+	    getRuntimeSnapshot: async () => previewRuntimeSnapshot,
+	    getGitStatus: async (workspacePath) => previewGitStatus(workspacePath),
     initGitRepository: async (workspacePath) => ({ ok: true, status: previewGitStatus(workspacePath), output: "Initialized empty Git repository" }),
     setGitRemote: async (payload) => ({ ok: true, status: { ...previewGitStatus(payload.workspacePath), originUrl: payload.remoteUrl }, output: "" }),
     fetchGitRepository: async (payload) => ({ ok: true, status: previewGitStatus(payload.workspacePath), output: "Fetched origin" }),
@@ -533,10 +564,34 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
         " src/App.tsx | 12 +++++++++---"
       ].join("\n")
     }),
-    startTerminal: async (options) => {
-      const runtime = previewRuntime(options);
-      const line = [
-        options.harnessEnabled ? "\r\n[harness preview] browser-preview://deepseek " : "\r\nbrowser-preview://deepseek ",
+	    startTerminal: async (options) => {
+	      const runtime = previewRuntime(options);
+	      const now = new Date().toISOString();
+	      const event: RuntimeEvent = {
+	        id: `preview-${Date.now().toString(36)}`,
+	        type: "run-started",
+	        label: "Run started",
+	        detail: options.launchAction,
+	        at: now
+	      };
+	      previewRuntimeSnapshot = {
+	        ...previewRuntimeSnapshot,
+	        status: "running",
+	        source: "pty",
+	        sessionId: `preview-${Date.now().toString(36)}`,
+	        mode: options.launchAction,
+	        workspacePath: options.workspacePath,
+	        pid: 0,
+	        command: "browser-preview://deepseek",
+	        args: [options.launchAction, options.agentPrompt || ""].filter(Boolean),
+	        startedAt: now,
+	        updatedAt: now,
+	        events: [...previewRuntimeSnapshot.events, event].slice(-80)
+	      };
+	      runtimeEvents.forEach((listener) => listener(event));
+	      runtimeSnapshots.forEach((listener) => listener(previewRuntimeSnapshot));
+	      const line = [
+	        options.harnessEnabled ? "\r\n[harness preview] browser-preview://deepseek " : "\r\nbrowser-preview://deepseek ",
         options.launchAction === "exec" || options.launchAction === "plan" ? `${options.launchAction} exec --auto` : options.launchAction,
         "\r\n",
         "Electron preload is not active in browser preview.\r\n\r\n"
@@ -544,9 +599,26 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
       listeners.forEach((listener) => listener(line));
       return { ok: true, runtime, pid: 0 };
     },
-    stopTerminal: async () => {
-      exits.forEach((listener) => listener({ exitCode: 0 }));
-      return { ok: true };
+	    stopTerminal: async () => {
+	      const now = new Date().toISOString();
+	      const event: RuntimeEvent = {
+	        id: `preview-${Date.now().toString(36)}`,
+	        type: "run-exit",
+	        label: "Run completed",
+	        detail: "exitCode=0",
+	        at: now
+	      };
+	      previewRuntimeSnapshot = {
+	        ...previewRuntimeSnapshot,
+	        status: "completed",
+	        updatedAt: now,
+	        lastExit: { exitCode: 0, exitedAt: now },
+	        events: [...previewRuntimeSnapshot.events, event].slice(-80)
+	      };
+	      runtimeEvents.forEach((listener) => listener(event));
+	      runtimeSnapshots.forEach((listener) => listener(previewRuntimeSnapshot));
+	      exits.forEach((listener) => listener({ exitCode: 0 }));
+	      return { ok: true };
     },
     sendTerminalInput: () => undefined,
     resizeTerminal: () => undefined,
@@ -627,11 +699,19 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
       listeners.add(callback);
       return () => listeners.delete(callback);
     },
-    onTerminalExit: (callback) => {
-      exits.add(callback);
-      return () => exits.delete(callback);
-    },
-    onRemoteStatus: (callback) => {
+	    onTerminalExit: (callback) => {
+	      exits.add(callback);
+	      return () => exits.delete(callback);
+	    },
+	    onRuntimeSnapshot: (callback) => {
+	      runtimeSnapshots.add(callback);
+	      return () => runtimeSnapshots.delete(callback);
+	    },
+	    onRuntimeEvent: (callback) => {
+	      runtimeEvents.add(callback);
+	      return () => runtimeEvents.delete(callback);
+	    },
+	    onRemoteStatus: (callback) => {
       remoteStatuses.add(callback);
       return () => remoteStatuses.delete(callback);
     }

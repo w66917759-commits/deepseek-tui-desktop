@@ -50,7 +50,7 @@ import { getDesktopBridge } from "./desktopApi";
 import { shouldSubmitComposerShortcut } from "./composerKeys";
 
 type InspectorPanel = "skills" | "mcp" | "remote" | "git" | "settings" | null;
-type MainView = "chat" | "tools" | "tasks" | "terminal";
+type MainView = "chat" | "tools" | "tasks" | "agents" | "terminal";
 type ToolPage = "overview" | "skills" | "mcp";
 type AgentMode = "plan" | "agent" | "yolo";
 type StatusState =
@@ -96,7 +96,7 @@ interface SkillPreset {
   id: string;
   name: string;
   description: string;
-  icon: "zap" | "palette" | "calendar";
+  icon: "zap" | "palette" | "calendar" | "download";
   category: string;
   tools: string[];
 }
@@ -150,11 +150,11 @@ const defaultSettings: DesktopSettings = {
   skillsEnabled: true,
   mcpEnabled: false,
   allowShell: false,
-  maxSubagents: 3,
+  maxSubagents: 10,
   harnessEnabled: false,
   launchAction: "tui",
   rememberWorkspace: true,
-  enabledSkills: ["superpowers", "ui-ux-design"],
+  enabledSkills: ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"],
   enabledMcpServers: [],
   mobileBridgeEnabled: false,
   mobileBridgeHost: "127.0.0.1",
@@ -188,6 +188,14 @@ const skillPresets: SkillPreset[] = [
     icon: "calendar",
     category: "定时任务",
     tools: ["Advanced", "Cron", "Logs"]
+  },
+  {
+    id: "skill-downloader",
+    name: "Skill 下载",
+    description: "让 Agent 通过 curl 真实下载 Skill，保存并验证 SKILL.md，而不是手写相似内容。",
+    icon: "download",
+    category: "Skills",
+    tools: ["Download", "Install", "Verify"]
   }
 ];
 
@@ -544,12 +552,15 @@ const uiCopy = {
       title: "DeepSeek 编程对话",
       noWorkspace: "未选择 workspace",
       viewSwitch: "界面视图切换",
-      chat: "对话",
-      tools: "工具",
-      tasks: "定时任务",
-      terminal: "过程",
+	      chat: "对话",
+	      tools: "工具",
+	      agents: "Agents",
+	      tasks: "定时任务",
+	      terminal: "过程",
       checkRuntime: "检查运行环境",
       chooseWorkspace: "选择 workspace",
+      currentBranch: "当前分支",
+      noBranch: "未检测到分支",
       openCursor: "导出到 Cursor",
       apiKeySaved: "API Key 已保存",
       apiKeyMissing: "设置 API Key",
@@ -568,20 +579,42 @@ const uiCopy = {
       off: "关闭",
       enabled: "已启用",
       selected: "已选择",
-      skillsDesc: "Skills 是可编辑的 Markdown 指令，告诉 Agent 遇到某类任务时该怎么做。",
+      skillsDesc: "Skills 是可新增、导入和勾选的 Markdown 指令，告诉 Agent 遇到某类任务时该怎么做。",
       manageSkills: "管理 Skills"
     },
-    terminal: {
-      clear: "清空过程",
-      stop: "停止",
-      bootReady: "过程面板已就绪。\r\n",
-      bootHint: "运行过程会显示在这里。\r\n\r\n"
-    },
-    composer: {
+	    terminal: {
+	      clear: "清空过程",
+	      stop: "停止",
+	      bootReady: "过程面板已就绪。\r\n",
+	      bootHint: "运行过程会显示在这里。\r\n\r\n"
+	    },
+	    runtimeAgents: {
+	      title: "Agent 运行状态",
+	      subtitle: "结构化状态来自 runtime API；不可用时由终端事件兜底生成。",
+	      status: "状态",
+	      source: "来源",
+	      mode: "模式",
+	      workspace: "Workspace",
+	      started: "开始",
+	      noAgents: "还没有检测到子 Agent。",
+	      recentEvents: "最近事件",
+	      noEvents: "暂无运行事件。",
+	      counts: (running: number, completed: number, failed: number) => `${running} 运行 / ${completed} 完成 / ${failed} 失败`,
+	      statuses: {
+	        idle: "空闲",
+	        running: "运行中",
+	        completed: "已完成",
+	        failed: "失败",
+	        stopped: "已停止",
+	        queued: "排队中",
+	        cancelled: "已取消"
+	      }
+	    },
+	    composer: {
       modeLabel: "运行模式",
       modelLabel: "模型",
-      harness: "Harness",
-      harnessHint: "只在需要完整桌面 harness 流程时开启",
+      harness: "过程流",
+      harnessHint: "打开显示过程面板并启用 DeepSeek 思考流；关闭会停止当前过程并关闭思考流。",
       stop: "停止",
       planPlaceholder: "描述目标，Plan 模式只会输出计划，不改文件...",
       execPlaceholder: "给 Agent 模式一个编程任务...",
@@ -597,8 +630,8 @@ const uiCopy = {
         settings: "设置"
       },
       subtitles: {
-        skills: "勾选后可直接改 SKILL.md 模板",
-        mcp: "勾选预设，也可以编辑最终 JSON",
+        skills: "新增、导入并勾选启动时加载的 Skill",
+        mcp: "勾选预设，也可以新增自定义 MCP",
         automations: "创建、启用和暂停每天运行的本机定时任务",
         remote: "手机查看进度、远程控制和更新提醒",
         git: "查看分支、远程仓库、变更、提交和推送",
@@ -611,12 +644,7 @@ const uiCopy = {
       chooseDir: "选择 skills 目录",
       save: "保存 Skills",
       enableRuntime: "启动时注入 Skills",
-      runtimeHint: "关闭后仍可编辑模板，但启动运行时不会加载这些 Skill。",
-      editorTitle: "编辑 Skill 模板",
-      editorHint: "这里保存的就是启动时注入的 SKILL.md。可以写中文规则、项目约束、检查清单；不会在每次启动时被内置模板覆盖。",
-      editorPath: "保存位置",
-      chooseTemplate: "选择要编辑的 Skill",
-      saveTemplate: "保存这个 Skill",
+      runtimeHint: "关闭后仍可新增和导入 Skill，但启动运行时不会加载这些 Skill。",
       createTitle: "新增 Skill",
       createName: "名称",
       createNamePlaceholder: "例如：日报检查",
@@ -627,40 +655,29 @@ const uiCopy = {
       importFailed: "导入失败",
       created: (path: string) => `Skill 已新增：${path}`,
       imported: (count: number) => `已导入 ${count} 个 Skill`,
-      saved: (path: string) => `Skill 已保存：${path}`,
       saveFailed: "Skill 保存失败",
       customCategory: "自定义",
       defaultTag: "默认",
-      fileTag: "文件",
-      sourceDefault: "内置默认稿",
-      sourceFile: "已编辑文件"
+      fileTag: "文件"
     },
     mcp: {
       helpTitle: "MCP 是什么",
-      helpBody: "MCP 可以理解为 Agent 的工具插座。这里默认只是选择和编辑配置；只有打开“启动时启用 MCP 接口”后，启动运行时才会注入这些 MCP。",
+      helpBody: "MCP 可以理解为 Agent 的工具插座。这里默认只是选择预设和新增自定义 MCP；只有打开“启动时启用 MCP 接口”后，启动运行时才会注入这些 MCP。",
       searchPlaceholder: "搜索 MCP、命令、分类...",
       summaryEnabled: (count: number) => `${count} 已选择`,
       summaryVisible: (count: number) => `${count} 可见`,
       summaryInstalled: (count: number) => `${count} 个内置预设`,
-      customConfigPlaceholder: "可选：覆盖为自定义 MCP JSON",
+      customConfigPlaceholder: "可选：使用已有 MCP JSON 文件",
       chooseConfig: "选择 MCP 配置",
       save: "保存 MCP",
       enableRuntime: "启动时启用 MCP 接口",
-      runtimeHint: "默认关闭。关闭时可以编辑 JSON 和预检，但不会设置 DEEPSEEK_MCP_CONFIG，也不会启动 MCP 服务。",
+      runtimeHint: "默认关闭。关闭时可以选择、新增和预检，但不会设置 DEEPSEEK_MCP_CONFIG，也不会启动 MCP 服务。",
       runtimeOn: "启动时会注入 MCP",
       runtimePending: "MCP 接口已打开，但还没有可注入的配置",
       runtimeOff: "启动时不会注入 MCP",
       riskSuffix: "风险",
-      editorTitle: "编辑 MCP JSON",
-      editorHint: "这是最终传给运行时的 MCP 配置。command/args/env 都可以改；密钥建议继续放在环境变量里。",
-      sourceGenerated: "来自当前勾选预设",
       sourceCustom: "来自自定义 JSON",
-      sourceMissing: "自定义 JSON 读取失败，下面显示可重新生成的草稿",
-      usePresets: "使用勾选预设",
-      saveConfig: "保存自定义 JSON",
-      configSaved: (path: string) => `MCP JSON 已保存：${path}`,
       configFailed: "MCP JSON 保存失败",
-      generated: "已重新生成当前勾选预设的 JSON 草稿",
       test: "预检 MCP",
       testing: "正在预检 MCP...",
       testOk: "MCP 预检通过",
@@ -830,8 +847,8 @@ const uiCopy = {
       nvidiaKeyPlaceholder: "粘贴 NVIDIA NIM API Key",
       allowShell: "Allow shell",
       agents: "Agents",
-      harnessMode: "Harness mode",
-      harnessHint: "开启后会把本次运行标记为 desktop harness 流程。",
+      harnessMode: "过程流式输出",
+      harnessHint: "开启后显示过程面板并启用 DeepSeek thinking；关闭后下一次请求会以 reasoning_effort=off 启动。",
       setup: "Setup",
       apiKeySaveFailed: "API Key 保存失败",
       save: "保存设置"
@@ -925,12 +942,15 @@ const uiCopy = {
       title: "DeepSeek coding chat",
       noWorkspace: "No workspace selected",
       viewSwitch: "UI view switch",
-      chat: "Chat",
-      tools: "Tools",
-      tasks: "Tasks",
-      terminal: "Process",
+	      chat: "Chat",
+	      tools: "Tools",
+	      agents: "Agents",
+	      tasks: "Tasks",
+	      terminal: "Process",
       checkRuntime: "Check runtime",
       chooseWorkspace: "Choose workspace",
+      currentBranch: "Current branch",
+      noBranch: "No branch detected",
       openCursor: "Export to Cursor",
       apiKeySaved: "API Key saved",
       apiKeyMissing: "Set API Key",
@@ -949,20 +969,42 @@ const uiCopy = {
       off: "Off",
       enabled: "Enabled",
       selected: "Selected",
-      skillsDesc: "Skills are editable Markdown instructions that tell the Agent how to handle specific work.",
+      skillsDesc: "Skills are Markdown instructions you can create, import, and enable for specific work.",
       manageSkills: "Manage Skills"
     },
-    terminal: {
-      clear: "Clear process",
-      stop: "Stop",
-      bootReady: "Process panel is ready.\r\n",
-      bootHint: "Run progress will appear here.\r\n\r\n"
-    },
-    composer: {
+	    terminal: {
+	      clear: "Clear process",
+	      stop: "Stop",
+	      bootReady: "Process panel is ready.\r\n",
+	      bootHint: "Run progress will appear here.\r\n\r\n"
+	    },
+	    runtimeAgents: {
+	      title: "Agent Runtime",
+	      subtitle: "Structured state uses the runtime API when available and falls back to terminal events.",
+	      status: "Status",
+	      source: "Source",
+	      mode: "Mode",
+	      workspace: "Workspace",
+	      started: "Started",
+	      noAgents: "No sub-agents detected yet.",
+	      recentEvents: "Recent events",
+	      noEvents: "No runtime events yet.",
+	      counts: (running: number, completed: number, failed: number) => `${running} running / ${completed} completed / ${failed} failed`,
+	      statuses: {
+	        idle: "Idle",
+	        running: "Running",
+	        completed: "Completed",
+	        failed: "Failed",
+	        stopped: "Stopped",
+	        queued: "Queued",
+	        cancelled: "Cancelled"
+	      }
+	    },
+	    composer: {
       modeLabel: "Run mode",
       modelLabel: "Model",
-      harness: "Harness",
-      harnessHint: "Enable only when a run needs the full desktop harness workflow",
+      harness: "Process Stream",
+      harnessHint: "Show the process panel and enable DeepSeek thinking output; turning it off stops the current run and disables thinking output.",
       stop: "Stop",
       planPlaceholder: "Describe the goal. Plan mode will only produce a plan and will not edit files...",
       execPlaceholder: "Give Agent mode a coding task...",
@@ -978,8 +1020,8 @@ const uiCopy = {
         settings: "Settings"
       },
       subtitles: {
-        skills: "Enable presets and edit SKILL.md templates",
-        mcp: "Enable presets or edit the final JSON",
+        skills: "Create, import, and enable launch-time Skills",
+        mcp: "Enable presets or add custom MCP servers",
         automations: "Create, activate, and pause local daily scheduled tasks",
         remote: "Mobile progress, controls, and update alerts",
         git: "View branches, remotes, changes, commits, and pushes",
@@ -992,12 +1034,7 @@ const uiCopy = {
       chooseDir: "Choose skills directory",
       save: "Save Skills",
       enableRuntime: "Inject Skills on launch",
-      runtimeHint: "When off, templates remain editable, but the runtime will not load these Skills at launch.",
-      editorTitle: "Edit Skill Template",
-      editorHint: "This is the SKILL.md content injected on launch. You can add project rules, checklists, or Chinese instructions; edited files are not overwritten by the built-in template.",
-      editorPath: "Save path",
-      chooseTemplate: "Choose a Skill to edit",
-      saveTemplate: "Save this Skill",
+      runtimeHint: "When off, you can still create and import Skills, but the runtime will not load them at launch.",
       createTitle: "New Skill",
       createName: "Name",
       createNamePlaceholder: "Daily report check",
@@ -1008,40 +1045,29 @@ const uiCopy = {
       importFailed: "Import failed",
       created: (path: string) => `Skill created: ${path}`,
       imported: (count: number) => `${count} Skill${count === 1 ? "" : "s"} imported`,
-      saved: (path: string) => `Skill saved: ${path}`,
       saveFailed: "Skill save failed",
       customCategory: "Custom",
       defaultTag: "Default",
-      fileTag: "File",
-      sourceDefault: "Built-in draft",
-      sourceFile: "Edited file"
+      fileTag: "File"
     },
     mcp: {
       helpTitle: "What MCP Does",
-      helpBody: "MCP is a tool socket for the Agent. This panel selects and edits config by default; the runtime only receives MCP after you turn on launch-time MCP.",
+      helpBody: "MCP is a tool socket for the Agent. This panel selects presets and adds custom MCP servers; the runtime only receives MCP after you turn on launch-time MCP.",
       searchPlaceholder: "Search MCP, commands, categories...",
       summaryEnabled: (count: number) => `${count} selected`,
       summaryVisible: (count: number) => `${count} visible`,
       summaryInstalled: (count: number) => `${count} built-in presets`,
-      customConfigPlaceholder: "Optional: override with a custom MCP JSON",
+      customConfigPlaceholder: "Optional: use an existing MCP JSON file",
       chooseConfig: "Choose MCP config",
       save: "Save MCP",
       enableRuntime: "Enable MCP at launch",
-      runtimeHint: "Off by default. You can still edit JSON and run preflight, but DEEPSEEK_MCP_CONFIG is not set and MCP services are not started.",
+      runtimeHint: "Off by default. You can still select, add, and preflight MCP servers, but DEEPSEEK_MCP_CONFIG is not set and services are not started.",
       runtimeOn: "MCP will be injected at launch",
       runtimePending: "MCP is on, but no injectable config is selected yet",
       runtimeOff: "MCP will not be injected at launch",
       riskSuffix: "risk",
-      editorTitle: "Edit MCP JSON",
-      editorHint: "This is the MCP config passed to the runtime. command/args/env are editable; keep secrets in environment variables when possible.",
-      sourceGenerated: "Generated from enabled presets",
       sourceCustom: "Loaded from custom JSON",
-      sourceMissing: "Custom JSON could not be read; the draft below can be regenerated",
-      usePresets: "Use selected presets",
-      saveConfig: "Save custom JSON",
-      configSaved: (path: string) => `MCP JSON saved: ${path}`,
       configFailed: "MCP JSON save failed",
-      generated: "Regenerated the JSON draft from enabled presets",
       test: "Preflight MCP",
       testing: "Checking MCP...",
       testOk: "MCP preflight passed",
@@ -1211,8 +1237,8 @@ const uiCopy = {
       nvidiaKeyPlaceholder: "Paste NVIDIA NIM API Key",
       allowShell: "Allow shell",
       agents: "Agents",
-      harnessMode: "Harness mode",
-      harnessHint: "When enabled, launches are marked as desktop harness runs.",
+      harnessMode: "Process stream output",
+      harnessHint: "When enabled, the process panel is visible and DeepSeek thinking is enabled; when disabled, the next request starts with reasoning_effort=off.",
       setup: "Setup",
       apiKeySaveFailed: "API key save failed",
       save: "Save settings"
@@ -1258,6 +1284,11 @@ const skillTranslations: Record<AppLanguage, Record<string, Partial<Pick<SkillPr
       name: "Cron Advanced Scripts",
       description: "Advanced-only helper for hand-authored crontab files; normal scheduled tasks are managed by the Scheduled Tasks screen.",
       category: "Scheduled Tasks"
+    },
+    "skill-downloader": {
+      name: "Skill Download",
+      description: "Guides the Agent to download Skills with curl, save SKILL.md, and verify the source instead of synthesizing similar content.",
+      category: "Skills"
     }
   }
 };
@@ -1506,6 +1537,36 @@ function formatStatus(status: StatusState, language: AppLanguage) {
     default:
       return copy.ready;
   }
+}
+
+function createEmptyRuntimeSnapshot(): RuntimeSnapshot {
+  const updatedAt = new Date().toISOString();
+  return {
+    status: "idle",
+    source: "none",
+    sessionId: "",
+    mode: "",
+    workspacePath: "",
+    pid: 0,
+    command: "",
+    args: [],
+    startedAt: "",
+    updatedAt,
+    lastExit: null,
+    agents: [],
+    counts: {
+      total: 0,
+      running: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0
+    },
+    events: []
+  };
+}
+
+function runtimeStatusText(status: RuntimeRunStatus | RuntimeAgentStatus, language: AppLanguage) {
+  return uiCopy[language].runtimeAgents.statuses[status] || status;
 }
 
 function gitStatusLabel(change: GitChangeInfo) {
@@ -1782,6 +1843,7 @@ function formatDownloads(downloads: number, language: AppLanguage) {
 function iconForSkill(skill: SkillPreset) {
   if (skill.icon === "palette") return Palette;
   if (skill.icon === "calendar") return CalendarClock;
+  if (skill.icon === "download") return DownloadCloud;
   return Zap;
 }
 
@@ -1798,6 +1860,8 @@ function iconForMcp(id: string) {
 function App() {
   const [settings, setSettings] = useState<DesktopSettings>(defaultSettings);
   const [runtime, setRuntime] = useState<RuntimeCheck | null>(null);
+  const [runtimeSnapshot, setRuntimeSnapshot] = useState<RuntimeSnapshot>(() => createEmptyRuntimeSnapshot());
+  const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEvent[]>([]);
   const [remoteStatus, setRemoteStatus] = useState<RemoteBridgeStatus | null>(null);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<StatusState>({ type: "ready" });
@@ -1814,8 +1878,6 @@ function App() {
   const [mcpSearch, setMcpSearch] = useState("");
   const [mcpCategory, setMcpCategory] = useState<"All" | McpPreset["category"]>("All");
   const [customization, setCustomization] = useState<CustomizationDraft | null>(null);
-  const [skillEditorId, setSkillEditorId] = useState(skillPresets[0]?.id || "");
-  const [skillDraft, setSkillDraft] = useState("");
   const [newSkillName, setNewSkillName] = useState("");
   const [newSkillDescription, setNewSkillDescription] = useState("");
   const [mcpDraft, setMcpDraft] = useState("");
@@ -1866,14 +1928,45 @@ function App() {
     () => findConversationSession(conversationStore, conversationStore.activeSessionId),
     [conversationStore]
   );
+  const selectedWorkspacePath = activeSession?.workspacePath || settings.workspacePath;
+  const selectedWorkspaceLabel = selectedWorkspacePath.trim()
+    ? projectNameFromWorkspace(selectedWorkspacePath, language)
+    : t.topbar.chooseWorkspace;
+  const currentBranchLabel = gitStatus?.isRepo && gitStatus.branch
+    ? gitStatus.branch
+    : t.topbar.noBranch;
+  const processStreamEnabled = settings.harnessEnabled;
   const selectedProjectId = useMemo(
-    () => projectIdFromWorkspace(activeSession?.workspacePath || settings.workspacePath),
-    [activeSession?.workspacePath, settings.workspacePath]
+    () => projectIdFromWorkspace(selectedWorkspacePath),
+    [selectedWorkspacePath]
   );
 
   useEffect(() => {
     activeSessionIdRef.current = conversationStore.activeSessionId;
   }, [conversationStore.activeSessionId]);
+
+  useEffect(() => {
+    let active = true;
+    desktop.getRuntimeSnapshot().then((snapshot) => {
+      if (!active) return;
+      setRuntimeSnapshot(snapshot);
+      setRuntimeEvents(snapshot.events || []);
+    }).catch(() => {
+      // Older preview bridges may not expose runtime state during hot reload.
+    });
+    const offSnapshot = desktop.onRuntimeSnapshot((snapshot) => {
+      setRuntimeSnapshot(snapshot);
+      setRuntimeEvents(snapshot.events || []);
+    });
+    const offEvent = desktop.onRuntimeEvent((event) => {
+      setRuntimeEvents((current) => [...current, event].slice(-80));
+    });
+    return () => {
+      active = false;
+      offSnapshot();
+      offEvent();
+    };
+  }, [desktop]);
 
   const fitTerminal = useCallback(() => {
     const host = terminalHostRef.current;
@@ -1932,16 +2025,8 @@ function App() {
     const draft = await desktop.getCustomization(sourceSettings);
     setCustomization(draft);
     setMcpDraft(draft.mcpConfigText);
-    const availableSkillIds = Object.keys(draft.skillTemplates);
-    const selectedSkillId = draft.skillTemplates[skillEditorId]
-      ? skillEditorId
-      : availableSkillIds[0] || skillPresets[0]?.id || "";
-    if (selectedSkillId !== skillEditorId) {
-      setSkillEditorId(selectedSkillId);
-    }
-    setSkillDraft(draft.skillTemplates[selectedSkillId]?.content || "");
     return draft;
-  }, [desktop, settings, skillEditorId]);
+  }, [desktop, settings]);
 
   const loadAutomations = useCallback(async () => {
     const store = await desktop.getAutomations();
@@ -2042,6 +2127,14 @@ function App() {
   }, [inspectorPanel, loadGitStatus, t]);
 
   useEffect(() => {
+    if (!settings.workspacePath.trim()) {
+      setGitStatus(null);
+      return;
+    }
+    loadGitStatus().catch(() => undefined);
+  }, [loadGitStatus, settings.workspacePath]);
+
+  useEffect(() => {
     if (mainView === "tasks") {
       loadAutomations().catch((error) => {
         setAutomationMessage(error instanceof Error ? error.message : t.automations.failed);
@@ -2072,6 +2165,10 @@ function App() {
   }, [remoteStatus?.auth.account]);
 
   useEffect(() => {
+    if (!processStreamEnabled && mainView !== "terminal") {
+      return;
+    }
+
     if (!terminalHostRef.current || terminalRef.current) {
       return;
     }
@@ -2131,7 +2228,7 @@ function App() {
       terminalRef.current = null;
       fitRef.current = null;
     };
-  }, [desktop, fitTerminal, renderTerminalForSession]);
+  }, [desktop, fitTerminal, mainView, processStreamEnabled, renderTerminalForSession]);
 
   useEffect(() => {
     window.requestAnimationFrame(fitTerminal);
@@ -2534,6 +2631,18 @@ function App() {
     setStatus({ type: "stopped" });
   }, [desktop]);
 
+  const toggleProcessStream = useCallback(() => {
+    const nextEnabled = !processStreamEnabled;
+    updateSetting("harnessEnabled", nextEnabled);
+    setMainView("chat");
+    if (!nextEnabled && running) {
+      void stop();
+    }
+    if (nextEnabled) {
+      window.requestAnimationFrame(fitTerminal);
+    }
+  }, [fitTerminal, processStreamEnabled, running, stop, updateSetting]);
+
   const toggleSkill = useCallback((id: string) => {
     setSettings((current) => {
       const enabled = new Set(current.enabledSkills || []);
@@ -2558,45 +2667,6 @@ function App() {
     });
   }, []);
 
-  const selectSkillTemplate = useCallback((id: string) => {
-    setSkillEditorId(id);
-    setSkillDraft(customization?.skillTemplates[id]?.content || "");
-  }, [customization]);
-
-  const saveSkillDraft = useCallback(async () => {
-    const result = await desktop.saveSkillTemplate({
-      settings,
-      skillId: skillEditorId,
-      content: skillDraft
-    });
-
-    if (!result.ok) {
-      setTemplateMessage(result.error || t.skills.saveFailed);
-      return;
-    }
-
-    const savedSettings = await desktop.saveSettings(settings);
-    setSettings(savedSettings);
-    setCustomization((current) => current ? {
-      ...current,
-      skillRoot: result.skillRoot || current.skillRoot,
-      skillTemplates: {
-        ...current.skillTemplates,
-        [skillEditorId]: result.skill || {
-          id: skillEditorId,
-          name: current.skillTemplates[skillEditorId]?.name || skillPresets.find((skill) => skill.id === skillEditorId)?.name || skillEditorId,
-          description: current.skillTemplates[skillEditorId]?.description || skillPresets.find((skill) => skill.id === skillEditorId)?.description || "",
-          path: result.path || current.skillTemplates[skillEditorId]?.path || "",
-          source: "file",
-          origin: current.skillTemplates[skillEditorId]?.origin || (skillPresets.some((skill) => skill.id === skillEditorId) ? "preset" : "custom"),
-          content: skillDraft
-        }
-      }
-    } : current);
-    setStatus({ type: "settingsSaved" });
-    setTemplateMessage(t.skills.saved(result.path || ""));
-  }, [desktop, settings, skillDraft, skillEditorId, t]);
-
   const createSkill = useCallback(async () => {
     const result = await desktop.createSkillTemplate({
       settings,
@@ -2614,9 +2684,7 @@ function App() {
     };
     const savedSettings = await desktop.saveSettings(nextSettings);
     setSettings(savedSettings);
-    const draft = await loadCustomization(savedSettings);
-    setSkillEditorId(result.skill.id);
-    setSkillDraft(draft.skillTemplates[result.skill.id]?.content || result.skill.content);
+    await loadCustomization(savedSettings);
     setNewSkillName("");
     setNewSkillDescription("");
     setStatus({ type: "settingsSaved" });
@@ -2639,44 +2707,10 @@ function App() {
     };
     const savedSettings = await desktop.saveSettings(nextSettings);
     setSettings(savedSettings);
-    const draft = await loadCustomization(savedSettings);
-    const firstId = importedIds[0] || skillEditorId;
-    setSkillEditorId(firstId);
-    setSkillDraft(draft.skillTemplates[firstId]?.content || "");
+    await loadCustomization(savedSettings);
     setStatus({ type: "settingsSaved" });
     setTemplateMessage(t.skills.imported(importedIds.length));
-  }, [desktop, loadCustomization, settings, skillEditorId, t]);
-
-  const useMcpPresetDraft = useCallback(async () => {
-    const nextSettings = { ...settings, mcpConfigPath: "" };
-    const savedSettings = await desktop.saveSettings(nextSettings);
-    setSettings(savedSettings);
-    const draft = await loadCustomization(savedSettings);
-    setMcpDraft(draft.mcpConfigText);
-    setStatus({ type: "settingsSaved" });
-    setTemplateMessage(t.mcp.generated);
   }, [desktop, loadCustomization, settings, t]);
-
-  const saveMcpDraft = useCallback(async () => {
-    const result = await desktop.saveMcpConfig({
-      settings,
-      content: mcpDraft
-    });
-
-    if (!result.ok || !result.path) {
-      setTemplateMessage(result.error || t.mcp.configFailed);
-      return;
-    }
-
-    const nextSettings = { ...settings, mcpConfigPath: result.path };
-    const savedSettings = await desktop.saveSettings(nextSettings);
-    setSettings(savedSettings);
-    const draft = await loadCustomization(savedSettings);
-    setCustomization(draft);
-    setMcpDraft(result.content || draft.mcpConfigText);
-    setStatus({ type: "settingsSaved" });
-    setTemplateMessage(t.mcp.configSaved(result.path));
-  }, [desktop, loadCustomization, mcpDraft, settings, t]);
 
   const addCustomMcpServer = useCallback(async () => {
     const id = customMcpId.trim();
@@ -3036,12 +3070,14 @@ function App() {
     setInspectorPanel((current) => current === panel ? null : panel);
   }, []);
 
-  const messageListClassName = mainView === "tools" || mainView === "tasks" ? "message-list tool-message-list" : "message-list";
+  const messageListClassName = mainView === "tools" || mainView === "tasks" || mainView === "agents" ? "message-list tool-message-list" : "message-list";
+  const conversationLayoutClassName = processStreamEnabled ? "conversation-layout" : "conversation-layout process-panel-collapsed";
   const terminalCardClassName = mainView === "terminal"
     ? "terminal-card terminal-expanded"
-    : mainView === "tools" || mainView === "tasks"
+    : mainView === "tools" || mainView === "tasks" || mainView === "agents"
       ? "terminal-card terminal-hidden"
       : "terminal-card process-panel";
+  const runtimeEventList = runtimeSnapshot.events.length > 0 ? runtimeSnapshot.events : runtimeEvents;
   const terminalPanel = (
     <section className={terminalCardClassName}>
       <div className="terminal-toolbar">
@@ -3071,6 +3107,83 @@ function App() {
         </div>
       </div>
       <div ref={terminalHostRef} className="terminal-host" />
+    </section>
+  );
+
+  const agentsPanel = (
+    <section className="agents-panel">
+      <div className="tool-section-head">
+        <div>
+          <h3>{t.runtimeAgents.title}</h3>
+          <p>{t.runtimeAgents.subtitle}</p>
+        </div>
+        <span className={`status-chip runtime-${runtimeSnapshot.status}`}>
+          {runtimeStatusText(runtimeSnapshot.status, language)}
+        </span>
+      </div>
+      <div className="runtime-summary-grid">
+        <article>
+          <Activity size={18} aria-hidden />
+          <span>{t.runtimeAgents.status}</span>
+          <strong>{runtimeStatusText(runtimeSnapshot.status, language)}</strong>
+        </article>
+        <article>
+          <Bot size={18} aria-hidden />
+          <span>Agents</span>
+          <strong>{runtimeSnapshot.counts.total}</strong>
+        </article>
+        <article>
+          <Server size={18} aria-hidden />
+          <span>{t.runtimeAgents.source}</span>
+          <strong>{runtimeSnapshot.source}</strong>
+        </article>
+      </div>
+      <div className="runtime-meta-row">
+        <span>{t.runtimeAgents.mode}: <strong>{runtimeSnapshot.mode || "-"}</strong></span>
+        <span>{t.runtimeAgents.started}: <strong>{formatSessionTime(runtimeSnapshot.startedAt, language) || "-"}</strong></span>
+        <span>{t.runtimeAgents.workspace}: <strong>{projectNameFromWorkspace(runtimeSnapshot.workspacePath, language)}</strong></span>
+      </div>
+      <div className="runtime-counts">
+        {t.runtimeAgents.counts(runtimeSnapshot.counts.running, runtimeSnapshot.counts.completed, runtimeSnapshot.counts.failed)}
+      </div>
+      <div className="agent-list">
+        {runtimeSnapshot.agents.length === 0 ? (
+          <p className="history-empty">{t.runtimeAgents.noAgents}</p>
+        ) : runtimeSnapshot.agents.map((agent) => (
+          <article key={agent.id} className="agent-runtime-row">
+            <div className="agent-runtime-main">
+              <span className="preset-icon"><Bot size={16} aria-hidden /></span>
+              <div>
+                <strong>{agent.name}</strong>
+                <small>{agent.summary || agent.id}</small>
+              </div>
+            </div>
+            <span className={`status-chip agent-${agent.status}`}>
+              {runtimeStatusText(agent.status, language)}
+            </span>
+          </article>
+        ))}
+      </div>
+      <section className="runtime-events">
+        <div className="tool-section-head compact">
+          <div>
+            <h3>{t.runtimeAgents.recentEvents}</h3>
+          </div>
+        </div>
+        {runtimeEventList.length === 0 ? (
+          <p className="history-empty">{t.runtimeAgents.noEvents}</p>
+        ) : (
+          <ol>
+            {runtimeEventList.slice(-8).reverse().map((event) => (
+              <li key={event.id}>
+                <span>{formatSessionTime(event.at, language)}</span>
+                <strong>{event.label}</strong>
+                {event.detail ? <small>{event.detail}</small> : null}
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
     </section>
   );
 
@@ -3144,42 +3257,6 @@ function App() {
           </button>
         );
       })}
-      <section className="template-editor">
-        <div className="template-editor-head">
-          <div>
-            <strong>{t.skills.editorTitle}</strong>
-            <small>{t.skills.editorHint}</small>
-          </div>
-          <span className="status-chip">
-            {customization?.skillTemplates[skillEditorId]?.source === "file" ? t.skills.sourceFile : t.skills.sourceDefault}
-          </span>
-        </div>
-        <label>
-          {t.skills.chooseTemplate}
-          <span className="select-wrap">
-            <select value={skillEditorId} onChange={(event) => selectSkillTemplate(event.target.value)}>
-              {skillCatalog.map((skill) => (
-                <option key={skill.id} value={skill.id}>{skill.name}</option>
-              ))}
-            </select>
-            <ChevronDown size={14} aria-hidden />
-          </span>
-        </label>
-        <textarea
-          className="template-textarea"
-          value={skillDraft}
-          onChange={(event) => setSkillDraft(event.target.value)}
-          spellCheck={false}
-        />
-        <div className="template-path">
-          <span>{t.skills.editorPath}</span>
-          <code>{customization?.skillTemplates[skillEditorId]?.path || customization?.skillRoot || ""}</code>
-        </div>
-        <button type="button" className="primary wide" onClick={saveSkillDraft}>
-          <CheckCircle2 size={16} aria-hidden />
-          {t.skills.saveTemplate}
-        </button>
-      </section>
       {templateMessage ? <p className="template-message">{templateMessage}</p> : null}
       <div className="path-picker">
         <input
@@ -3366,38 +3443,6 @@ function App() {
 	          </button>
 	        );
 	      })}
-		      <section className="template-editor">
-	        <div className="template-editor-head">
-	          <div>
-            <strong>{t.mcp.editorTitle}</strong>
-            <small>{t.mcp.editorHint}</small>
-          </div>
-          <span className={customization?.mcpConfigSource === "missing" ? "status-chip warning" : "status-chip"}>
-            {customization?.mcpConfigSource === "custom"
-              ? t.mcp.sourceCustom
-              : customization?.mcpConfigSource === "missing"
-                ? t.mcp.sourceMissing
-                : t.mcp.sourceGenerated}
-          </span>
-        </div>
-        {customization?.mcpConfigError ? <p className="template-message error">{customization.mcpConfigError}</p> : null}
-        <textarea
-          className="template-textarea mcp-json"
-          value={mcpDraft}
-          onChange={(event) => setMcpDraft(event.target.value)}
-          spellCheck={false}
-        />
-        <div className="template-actions">
-          <button type="button" className="secondary" onClick={useMcpPresetDraft}>
-            <RotateCcw size={16} aria-hidden />
-            {t.mcp.usePresets}
-          </button>
-          <button type="button" className="primary" onClick={saveMcpDraft}>
-            <CheckCircle2 size={16} aria-hidden />
-            {t.mcp.saveConfig}
-          </button>
-        </div>
-      </section>
       {templateMessage ? <p className="template-message">{templateMessage}</p> : null}
       <div className="path-picker">
         <input
@@ -3664,6 +3709,18 @@ function App() {
         <section className="sidebar-actions">
           <button
             type="button"
+            className={mainView === "agents" ? "sidebar-tool active" : "sidebar-tool"}
+            onClick={() => {
+              setInspectorPanel(null);
+              setMainView("agents");
+            }}
+          >
+            <Bot size={16} aria-hidden />
+            {t.topbar.agents}
+            <span className="sidebar-badge">{runtimeSnapshot.counts.total}</span>
+          </button>
+          <button
+            type="button"
             className={mainView === "tools" && toolPage === "skills" ? "sidebar-tool active" : "sidebar-tool"}
             onClick={() => openToolPage("skills")}
           >
@@ -3720,34 +3777,21 @@ function App() {
         <header className="conversation-topbar">
           <div className="topbar-title">
             <h2>{activeSession?.title && activeSession.title !== t.history.untitled ? activeSession.title : t.topbar.title}</h2>
-            <button
-              type="button"
-              className="workspace-picker-button"
-              title={settings.workspacePath ? `${t.topbar.chooseWorkspace}: ${settings.workspacePath}` : t.topbar.chooseWorkspace}
-              onClick={chooseWorkspace}
-            >
-              <FolderOpen size={14} aria-hidden />
-              <span>{settings.workspacePath || t.topbar.chooseWorkspace}</span>
-            </button>
           </div>
           <div className="view-switch" aria-label={t.topbar.viewSwitch}>
             <button type="button" className={mainView === "chat" ? "active" : ""} onClick={() => setMainView("chat")}>
               <MessageSquare size={15} aria-hidden />
               {t.topbar.chat}
             </button>
-            <button type="button" className={mainView === "tools" ? "active" : ""} onClick={() => setMainView("tools")}>
-              <Layers3 size={15} aria-hidden />
-              {t.topbar.tools}
-            </button>
-            <button type="button" className={mainView === "tasks" ? "active" : ""} onClick={openScheduledTasksPage}>
-              <CalendarClock size={15} aria-hidden />
-              {t.topbar.tasks}
-            </button>
-            <button type="button" className={mainView === "terminal" ? "active" : ""} onClick={() => setMainView("terminal")}>
-              <Activity size={15} aria-hidden />
-              {t.topbar.terminal}
-            </button>
-          </div>
+	            <button type="button" className={mainView === "tools" ? "active" : ""} onClick={() => setMainView("tools")}>
+	              <Layers3 size={15} aria-hidden />
+	              {t.topbar.tools}
+	            </button>
+	            <button type="button" className={mainView === "agents" ? "active" : ""} onClick={() => setMainView("agents")}>
+	              <Bot size={15} aria-hidden />
+	              {t.topbar.agents}
+	            </button>
+	          </div>
           <div className="topbar-actions">
             {remoteStatus?.enabled && remoteStatus.running ? (
               <div className="runtime-pill ready">
@@ -3763,15 +3807,6 @@ function App() {
             >
               <KeyRound size={16} aria-hidden />
               <span>{hasGlobalApiKey ? t.topbar.apiKeySaved : t.topbar.apiKeyMissing}</span>
-            </button>
-            <button
-              type="button"
-              className="secondary topbar-editor-button workspace-picker-button"
-              title={t.topbar.chooseWorkspace}
-              onClick={chooseWorkspace}
-            >
-              <FolderOpen size={17} aria-hidden />
-              <span>{t.topbar.chooseWorkspace}</span>
             </button>
             <button type="button" className="icon-button" title={`${t.topbar.checkRuntime}: ${selectedRuntimeLabel}`} onClick={() => refreshRuntime()}>
               <Activity size={17} aria-hidden />
@@ -3790,7 +3825,7 @@ function App() {
         </header>
 
         <div className={`conversation-body ${mainView === "chat" ? "chat-view" : ""}`}>
-          <div className={mainView === "chat" ? "conversation-layout" : messageListClassName}>
+          <div className={mainView === "chat" ? conversationLayoutClassName : messageListClassName}>
             <div className={mainView === "chat" ? "message-list chat-output-list" : "view-content"}>
             {mainView === "chat" ? messages.map((message) => (
                 <article key={message.id} className={`message-row ${message.role}`}>
@@ -3919,10 +3954,11 @@ function App() {
                 {toolPage === "skills" ? skillsToolPage : null}
                 {toolPage === "mcp" ? mcpToolPage : null}
               </section>
-            ) : null}
-            {mainView === "tasks" ? scheduledTasksPage : null}
-            </div>
-            {terminalPanel}
+	            ) : null}
+	            {mainView === "tasks" ? scheduledTasksPage : null}
+	            {mainView === "agents" ? agentsPanel : null}
+	            </div>
+            {processStreamEnabled ? terminalPanel : null}
           </div>
         </div>
 
@@ -3944,12 +3980,31 @@ function App() {
             </div>
             <button
               type="button"
-              className={settings.harnessEnabled ? "harness-toggle active" : "harness-toggle"}
-              aria-pressed={settings.harnessEnabled}
-              title={t.composer.harnessHint}
-              onClick={() => updateSetting("harnessEnabled", !settings.harnessEnabled)}
+              className={gitStatus?.isRepo ? "branch-status-button" : "branch-status-button missing"}
+              title={`${t.topbar.currentBranch}: ${currentBranchLabel}`}
+              onClick={() => setInspectorPanel("git")}
+              disabled={!settings.workspacePath.trim()}
             >
-              <ShieldCheck size={15} aria-hidden />
+              <GitBranch size={16} aria-hidden />
+              <span>{currentBranchLabel}</span>
+            </button>
+            <button
+              type="button"
+              className="workspace-picker-button"
+              title={selectedWorkspacePath ? `${t.topbar.chooseWorkspace}: ${selectedWorkspacePath}` : t.topbar.chooseWorkspace}
+              onClick={chooseWorkspace}
+            >
+              <FolderOpen size={15} aria-hidden />
+              <span>{selectedWorkspaceLabel}</span>
+            </button>
+            <button
+              type="button"
+              className={processStreamEnabled ? "process-stream-toggle active" : "process-stream-toggle"}
+              aria-pressed={processStreamEnabled}
+              title={t.composer.harnessHint}
+              onClick={toggleProcessStream}
+            >
+              <TerminalSquare size={15} aria-hidden />
               {t.composer.harness}
             </button>
             <label className="model-picker">
@@ -3965,18 +4020,6 @@ function App() {
                 </select>
                 <ChevronDown size={14} aria-hidden />
               </span>
-              {selectedModelPreset ? (
-                <a
-                  className="model-doc-link"
-                  href={selectedModelPreset.docsUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={selectedModelDocsLabel}
-                >
-                  <Link2 size={14} aria-hidden />
-                  <span>{t.settings.modelDoc}</span>
-                </a>
-              ) : null}
             </label>
           </div>
           <div className="composer-input">
@@ -4087,42 +4130,6 @@ function App() {
                   </button>
                 );
               })}
-              <section className="template-editor">
-                <div className="template-editor-head">
-                  <div>
-                    <strong>{t.skills.editorTitle}</strong>
-                    <small>{t.skills.editorHint}</small>
-                  </div>
-                  <span className="status-chip">
-                    {customization?.skillTemplates[skillEditorId]?.source === "file" ? t.skills.sourceFile : t.skills.sourceDefault}
-                  </span>
-                </div>
-	                <label>
-	                  {t.skills.chooseTemplate}
-	                  <span className="select-wrap">
-	                    <select value={skillEditorId} onChange={(event) => selectSkillTemplate(event.target.value)}>
-	                      {skillCatalog.map((skill) => (
-	                        <option key={skill.id} value={skill.id}>{skill.name}</option>
-	                      ))}
-	                    </select>
-	                    <ChevronDown size={14} aria-hidden />
-	                  </span>
-                </label>
-                <textarea
-                  className="template-textarea"
-                  value={skillDraft}
-                  onChange={(event) => setSkillDraft(event.target.value)}
-                  spellCheck={false}
-                />
-                <div className="template-path">
-                  <span>{t.skills.editorPath}</span>
-                  <code>{customization?.skillTemplates[skillEditorId]?.path || customization?.skillRoot || ""}</code>
-                </div>
-                <button type="button" className="primary wide" onClick={saveSkillDraft}>
-                  <CheckCircle2 size={16} aria-hidden />
-                  {t.skills.saveTemplate}
-                </button>
-              </section>
               {templateMessage ? <p className="template-message">{templateMessage}</p> : null}
               <div className="path-picker">
                 <input
@@ -4248,38 +4255,6 @@ function App() {
                   </button>
                 );
               })}
-              <section className="template-editor">
-                <div className="template-editor-head">
-                  <div>
-                    <strong>{t.mcp.editorTitle}</strong>
-                    <small>{t.mcp.editorHint}</small>
-                  </div>
-                  <span className={customization?.mcpConfigSource === "missing" ? "status-chip warning" : "status-chip"}>
-                    {customization?.mcpConfigSource === "custom"
-                      ? t.mcp.sourceCustom
-                      : customization?.mcpConfigSource === "missing"
-                        ? t.mcp.sourceMissing
-                        : t.mcp.sourceGenerated}
-                  </span>
-                </div>
-                {customization?.mcpConfigError ? <p className="template-message error">{customization.mcpConfigError}</p> : null}
-                <textarea
-                  className="template-textarea mcp-json"
-                  value={mcpDraft}
-                  onChange={(event) => setMcpDraft(event.target.value)}
-                  spellCheck={false}
-                />
-                <div className="template-actions">
-                  <button type="button" className="secondary" onClick={useMcpPresetDraft}>
-                    <RotateCcw size={16} aria-hidden />
-                    {t.mcp.usePresets}
-                  </button>
-                  <button type="button" className="primary" onClick={saveMcpDraft}>
-                    <CheckCircle2 size={16} aria-hidden />
-                    {t.mcp.saveConfig}
-                  </button>
-                </div>
-              </section>
               {templateMessage ? <p className="template-message">{templateMessage}</p> : null}
               <div className="path-picker">
                 <input
@@ -4776,12 +4751,12 @@ function App() {
                 </div>
                 <small className="field-hint">{t.settings.apiKeyHint}</small>
               </label>
-              <section className={settings.harnessEnabled ? "runtime-toggle-card enabled" : "runtime-toggle-card"}>
+              <section className={processStreamEnabled ? "runtime-toggle-card enabled" : "runtime-toggle-card"}>
                 <label className="check-row">
                   <input
                     type="checkbox"
-                    checked={settings.harnessEnabled}
-                    onChange={(event) => updateSetting("harnessEnabled", event.target.checked)}
+                    checked={processStreamEnabled}
+                    onChange={toggleProcessStream}
                   />
                   <span>{t.settings.harnessMode}</span>
                 </label>

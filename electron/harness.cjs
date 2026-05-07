@@ -4,6 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { DeepSeekRuntimeState } = require("./runtimeState.cjs");
 
 const DEFAULT_PATH = [
   "/opt/homebrew/bin",
@@ -16,8 +17,12 @@ const DEFAULT_PATH = [
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
-const DEFAULT_ENABLED_SKILLS = ["superpowers", "ui-ux-design"];
-const SKILL_PRESET_VERSION = 1;
+const DEFAULT_ENABLED_SKILLS = ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"];
+const LEGACY_DEFAULT_SKILLS = ["superpowers", "ui-ux-design"];
+const DEFAULT_MAX_SUBAGENTS = 10;
+const LEGACY_DESKTOP_MAX_SUBAGENTS = 3;
+const DESKTOP_MANAGED_CONFIG_FILE = "deepseek.desktop.managed.toml";
+const SKILL_PRESET_VERSION = 2;
 const AUTOMATION_STORE_VERSION = 1;
 const AUTOMATION_CRON_BEGIN = "# BEGIN DeepSeek TUI Desktop automation";
 const AUTOMATION_CRON_END = "# END DeepSeek TUI Desktop automation";
@@ -87,6 +92,50 @@ const CRON_SCHEDULER_SKILL_CONTENT = [
   "If the user explicitly asks to install it, first inspect `crontab -l`. Merge the new entry with existing entries instead of replacing the user's crontab blindly."
 ].join("\n");
 
+const SKILL_DOWNLOADER_SKILL_CONTENT = [
+  "---",
+  "name: skill-downloader",
+  "description: Use when the user asks to download, install, import, fetch, or update a Skill from a URL, GitHub raw file, local path, or archive.",
+  "---",
+  "",
+  "# Skill Downloader",
+  "",
+  "Use this skill when a user asks to download or install a Skill during a desktop Agent conversation.",
+  "",
+  "## Guardrails",
+  "",
+  "- Do not synthesize remote Skill content. Download or copy the source bytes first, then verify the saved file.",
+  "- Only install from an explicit URL, GitHub raw URL, local directory, local `SKILL.md`, or archive path supplied by the user or by a trusted project file.",
+  "- Prefer workspace-local installs under `.deepseek/skills/<skill-id>/SKILL.md` unless the user explicitly asks to install into the shared runtime skills directory.",
+  "- If installing into the shared runtime directory, use `$DEEPSEEK_SKILLS_DIR/<skill-id>/SKILL.md` and create the parent directory first.",
+  "- Never write API keys, tokens, or private repository credentials into a Skill file.",
+  "",
+  "## URL Download Workflow",
+  "",
+  "1. Normalize the target Skill id from the source or user request.",
+  "2. Create the destination directory.",
+  "3. Download the exact remote response with curl:",
+  "",
+  "```bash",
+  "mkdir -p \".deepseek/skills/<skill-id>\"",
+  "curl -fsSL \"<skill-url>\" -o \".deepseek/skills/<skill-id>/SKILL.md\"",
+  "```",
+  "",
+  "4. Verify the result:",
+  "",
+  "```bash",
+  "test -s \".deepseek/skills/<skill-id>/SKILL.md\"",
+  "sed -n '1,40p' \".deepseek/skills/<skill-id>/SKILL.md\"",
+  "```",
+  "",
+  "5. Confirm the file is a real Skill, ideally with YAML frontmatter containing `name:` and `description:`.",
+  "6. Report the source URL, destination path, and verification result.",
+  "",
+  "## Local Directory Workflow",
+  "",
+  "If the source is a local directory, find `SKILL.md`, copy the containing directory to the destination, then verify the copied `SKILL.md`. Preserve support files such as `scripts/`, `templates/`, and `examples/`."
+].join("\n");
+
 const PRESET_SKILLS = {
   superpowers: {
     dir: "superpowers",
@@ -127,6 +176,11 @@ const PRESET_SKILLS = {
         executable: true
       }
     ]
+  },
+  "skill-downloader": {
+    dir: "skill-downloader",
+    name: "Skill Downloader",
+    content: SKILL_DOWNLOADER_SKILL_CONTENT
   }
 };
 
@@ -290,7 +344,7 @@ function defaultSettings() {
     skillsEnabled: true,
     mcpEnabled: false,
     allowShell: false,
-    maxSubagents: 3,
+    maxSubagents: DEFAULT_MAX_SUBAGENTS,
     harnessEnabled: false,
     launchAction: "tui",
     rememberWorkspace: true,
@@ -399,9 +453,21 @@ function sanitizeSettings(settings) {
   if (typeof safeSettings.mobileBridgeToken !== "string" || safeSettings.mobileBridgeToken.length < 20) {
     safeSettings.mobileBridgeToken = createRemoteToken();
   }
+  safeSettings.maxSubagents = normalizeMaxSubagents(settings?.maxSubagents);
   safeSettings.enabledSkills = normalizeEnabledSkills(safeSettings);
   safeSettings.skillPresetVersion = SKILL_PRESET_VERSION;
   return safeSettings;
+}
+
+function normalizeMaxSubagents(value) {
+  const number = Number(value);
+  return !Number.isFinite(number) || number === LEGACY_DESKTOP_MAX_SUBAGENTS
+    ? DEFAULT_MAX_SUBAGENTS
+    : number;
+}
+
+function processStreamReasoningEffort(settings) {
+  return settings?.harnessEnabled ? "max" : "off";
 }
 
 function enabledList(values) {
@@ -421,14 +487,17 @@ function normalizeEnabledSkills(settings) {
 
   const selected = enabledList(settings.enabledSkills);
   const skillPresetVersion = Number(settings.skillPresetVersion) || 0;
-  const oldDefaultSkills = ["superpowers", "ui-ux-design"];
   const shouldRunSkillMigration = skillPresetVersion < SKILL_PRESET_VERSION;
   const stillOnOldDefaults = shouldRunSkillMigration
-    && selected.length === oldDefaultSkills.length
-    && oldDefaultSkills.every((id) => selected.includes(id));
+    && selected.length === LEGACY_DEFAULT_SKILLS.length
+    && LEGACY_DEFAULT_SKILLS.every((id) => selected.includes(id));
+  const oldDefaultsWithCron = shouldRunSkillMigration
+    && selected.length === LEGACY_DEFAULT_SKILLS.length + 1
+    && LEGACY_DEFAULT_SKILLS.every((id) => selected.includes(id))
+    && selected.includes("cron-scheduler");
 
-  if (stillOnOldDefaults) {
-    return [...oldDefaultSkills];
+  if (stillOnOldDefaults || oldDefaultsWithCron) {
+    return [...DEFAULT_ENABLED_SKILLS];
   }
 
   return selected;
@@ -769,7 +838,7 @@ function normalizeAutomationTask(input = {}, settings = {}, existing = {}) {
     mcpEnabled: Boolean(input.mcpEnabled ?? existing.mcpEnabled),
     enabledMcpServers: Array.isArray(input.enabledMcpServers) ? input.enabledMcpServers : Array.isArray(existing.enabledMcpServers) ? existing.enabledMcpServers : [],
     allowShell: Boolean(input.allowShell ?? existing.allowShell),
-    maxSubagents: Number(input.maxSubagents || existing.maxSubagents || settings.maxSubagents || 0) || 0,
+    maxSubagents: normalizeMaxSubagents(input.maxSubagents || existing.maxSubagents || settings.maxSubagents),
     harnessEnabled: Boolean(input.harnessEnabled ?? existing.harnessEnabled ?? settings.harnessEnabled),
     error: "",
     createdAt: existing.createdAt || new Date().toISOString(),
@@ -991,6 +1060,9 @@ class DeepSeekDesktopHarness extends EventEmitter {
     this.terminalProcess = null;
     this.activeSession = null;
     this.lastExit = null;
+    this.runtimeState = new DeepSeekRuntimeState();
+    this.runtimeState.on("runtime:event", (event) => this.emit("runtime:event", event));
+    this.runtimeState.on("runtime:snapshot", (snapshot) => this.emit("runtime:snapshot", snapshot));
   }
 
   userDataPath(file) {
@@ -1234,7 +1306,7 @@ if (task.skillsDir) env.DEEPSEEK_SKILLS_DIR = task.skillsDir;
 if (Array.isArray(task.enabledSkills)) env.DEEPSEEK_DESKTOP_ENABLED_SKILLS = task.enabledSkills.join(",");
 if (task.mcpEnabled && Array.isArray(task.enabledMcpServers)) env.DEEPSEEK_DESKTOP_ENABLED_MCP = task.enabledMcpServers.join(",");
 if (typeof task.allowShell === "boolean") env.DEEPSEEK_ALLOW_SHELL = task.allowShell ? "1" : "0";
-if (task.maxSubagents) env.DEEPSEEK_MAX_SUBAGENTS = String(task.maxSubagents);
+if (task.maxSubagents) env.DEEPSEEK_MAX_SUBAGENTS = String(normalizeMaxSubagents(task.maxSubagents));
 
 const binary = task.runtimePath || "deepseek";
 const args = Array.isArray(task.runArgs) && task.runArgs.length > 0
@@ -1341,8 +1413,9 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     if (settingsForRun.allowShell) {
       envLines.push("DEEPSEEK_ALLOW_SHELL=1");
     }
-    if (settingsForRun.maxSubagents) {
-      envLines.push(`DEEPSEEK_MAX_SUBAGENTS=${cronEnvValue(String(settingsForRun.maxSubagents))}`);
+    const maxSubagents = normalizeMaxSubagents(settingsForRun.maxSubagents);
+    if (maxSubagents) {
+      envLines.push(`DEEPSEEK_MAX_SUBAGENTS=${cronEnvValue(String(maxSubagents))}`);
     }
     if (settingsForRun.harnessEnabled) {
       envLines.push("DEEPSEEK_DESKTOP_HARNESS=1");
@@ -1412,7 +1485,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
         mcpEnabled: Boolean(settingsForRun.mcpEnabled),
         enabledMcpServers: enabledList(settingsForRun.enabledMcpServers),
         allowShell: Boolean(settingsForRun.allowShell),
-        maxSubagents: Number(settingsForRun.maxSubagents) || 0,
+        maxSubagents,
         harnessEnabled: Boolean(settingsForRun.harnessEnabled),
         lastGeneratedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -1665,30 +1738,6 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     };
   }
 
-  saveSkillTemplate(payload = {}) {
-    const skillId = slugifySkillId(payload.skillId || payload.name || "");
-    const preset = PRESET_SKILLS[skillId];
-    if (!skillId) {
-      return { ok: false, error: "Missing skill id" };
-    }
-
-    const settings = sanitizeSettings({ ...this.readSettings(), ...(payload.settings || {}) });
-    const filePath = preset ? this.skillFilePath(settings, preset) : this.customSkillFilePath(settings, skillId);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, safeTemplateText(payload.content));
-    if (preset) {
-      copyPresetSupportFiles(path.dirname(filePath), preset);
-    }
-    const skill = this.readSkillTemplate(settings, skillId);
-
-    return {
-      ok: true,
-      skill,
-      path: filePath,
-      skillRoot: this.skillRoot(settings)
-    };
-  }
-
   createSkillTemplate(payload = {}) {
     const settings = sanitizeSettings({ ...this.readSettings(), ...(payload.settings || {}) });
     const skillId = slugifySkillId(payload.skillId || payload.name || "custom-skill");
@@ -1836,6 +1885,24 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     const filePath = this.userDataPath("mcp.presets.json");
     fs.mkdirSync(this.app.getPath("userData"), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(config, null, 2));
+    return filePath;
+  }
+
+  writeDesktopManagedConfig(settings) {
+    const filePath = path.join(this.app.getPath("userData"), DESKTOP_MANAGED_CONFIG_FILE);
+    const content = [
+      "# Generated by DeepSeek TUI Desktop.",
+      "# Controls DeepSeek thinking output for the process stream toggle.",
+      `reasoning_effort = "${processStreamReasoningEffort(settings)}"`,
+      ""
+    ].join(os.EOL);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, { mode: 0o600 });
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch {
+      // chmod is best effort on filesystems that do not support POSIX modes.
+    }
     return filePath;
   }
 
@@ -2317,9 +2384,11 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     if (typeof options.allowShell === "boolean") {
       env.DEEPSEEK_ALLOW_SHELL = options.allowShell ? "1" : "0";
     }
-    if (options.maxSubagents) {
-      env.DEEPSEEK_MAX_SUBAGENTS = String(options.maxSubagents);
+    const maxSubagents = normalizeMaxSubagents(options.maxSubagents);
+    if (maxSubagents) {
+      env.DEEPSEEK_MAX_SUBAGENTS = String(maxSubagents);
     }
+    env.DEEPSEEK_MANAGED_CONFIG_PATH = this.writeDesktopManagedConfig(options);
 
     return env;
   }
@@ -2331,6 +2400,12 @@ process.exit(typeof result.status === "number" ? result.status : 1);
 
     const plan = this.buildLaunchPlan(options);
     if (!plan.runtime.selectedExists) {
+      this.runtimeState.startRun({
+        ...plan,
+        mode: plan.launchAction,
+        workspacePath: plan.cwd
+      });
+      this.runtimeState.finishRun({ exitCode: 127 });
       const runtimeHint = this.app.isPackaged
         ? "The bundled DeepSeek runtime is missing from this app package. Reinstall the app, rebuild the package, or choose a custom deepseek executable.\r\n\r\n"
         : "Run `npm install` in this desktop project to download the bundled binary, or choose a custom deepseek executable.\r\n\r\n";
@@ -2359,17 +2434,24 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       startedAt: new Date().toISOString()
     };
     this.lastExit = null;
+    this.runtimeState.startRun({
+      ...plan,
+      mode: plan.launchAction,
+      workspacePath: plan.cwd,
+      pid: this.terminalProcess.pid
+    });
 
     if (plan.env.DEEPSEEK_DESKTOP_HARNESS === "1") {
-      this.emit("terminal:data", `\r\n[harness ${plan.sessionId}] ${plan.command} ${plan.args.join(" ")}\r\n\r\n`);
+      this.handleTerminalData(`\r\n[harness ${plan.sessionId}] ${plan.command} ${plan.args.join(" ")}\r\n\r\n`);
     }
 
-    this.terminalProcess.onData((data) => this.emit("terminal:data", data));
+    this.terminalProcess.onData((data) => this.handleTerminalData(data));
     this.terminalProcess.onExit((exit) => {
       const session = this.activeSession;
       this.terminalProcess = null;
       this.activeSession = null;
       this.lastExit = { ...exit, session, exitedAt: new Date().toISOString() };
+      this.runtimeState.finishRun(this.lastExit);
       this.emit("terminal:exit", this.lastExit);
     });
 
@@ -2381,9 +2463,15 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       this.terminalProcess.kill();
       this.terminalProcess = null;
       this.activeSession = null;
+      this.runtimeState.stopRun();
       return { ok: true };
     }
     return { ok: false };
+  }
+
+  handleTerminalData(data) {
+    this.runtimeState.ingestTerminalData(data);
+    this.emit("terminal:data", data);
   }
 
   input(data) {
@@ -2404,6 +2492,10 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       activeSession: this.activeSession,
       lastExit: this.lastExit
     };
+  }
+
+  getRuntimeSnapshot() {
+    return this.runtimeState.snapshot();
   }
 
   shutdown() {

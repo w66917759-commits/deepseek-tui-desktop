@@ -127,6 +127,18 @@ function sendTerminalExit(exit) {
   }
 }
 
+function sendRuntimeSnapshot(snapshot) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("runtime:snapshot", snapshot);
+  }
+}
+
+function sendRuntimeEvent(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("runtime:event", event);
+  }
+}
+
 function sendRemoteStatus() {
   if (remoteBridge && mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("remote:status", remoteBridge.getStatus(true));
@@ -181,8 +193,6 @@ function registerIpc() {
 
   ipcMain.handle("customization:get", (_event, settings) => harness.readCustomization(settings));
 
-  ipcMain.handle("skills:save-template", (_event, payload) => harness.saveSkillTemplate(payload));
-
   ipcMain.handle("skills:create-template", (_event, payload) => harness.createSkillTemplate(payload));
 
   ipcMain.handle("skills:import-directory", (_event, payload) => harness.importSkillDirectory(payload));
@@ -223,6 +233,8 @@ function registerIpc() {
   ipcMain.handle("editor:open", (_event, payload) => openWorkspaceEditor(payload));
 
   ipcMain.handle("runtime:check", (_event, partialSettings) => harness.checkRuntime(partialSettings));
+
+  ipcMain.handle("runtime:snapshot", () => harness.getRuntimeSnapshot());
 
   ipcMain.handle("git:status", (_event, workspacePath) => harness.gitStatus(workspacePath));
 
@@ -314,6 +326,12 @@ app.whenReady().then(() => {
     sendTerminalExit(exit);
     remoteBridge.handleTerminalExit(exit);
     sendRemoteStatus();
+  });
+  harness.on("runtime:snapshot", (snapshot) => {
+    sendRuntimeSnapshot(snapshot);
+  });
+  harness.on("runtime:event", (event) => {
+    sendRuntimeEvent(event);
   });
 
   createWindow();
