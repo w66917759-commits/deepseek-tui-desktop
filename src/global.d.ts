@@ -4,14 +4,16 @@ declare global {
   interface Window {
     deepseekDesktop: {
 	      getSettings: () => Promise<DesktopSettings>;
+	      openExternal: (url: string) => Promise<{ ok: boolean; url?: string; error?: string }>;
 	      saveSettings: (settings: DesktopSettings) => Promise<DesktopSettings>;
 	      getApiKey: (provider?: ProviderMode) => Promise<string>;
 	      saveApiKey: (payload: ApiKeySavePayload) => Promise<ApiKeySaveResult>;
 	      getCustomization: (settings: DesktopSettings) => Promise<CustomizationDraft>;
       createSkillTemplate: (payload: SkillCreatePayload) => Promise<TemplateSaveResult>;
-      importSkillDirectory: (payload: SkillImportPayload) => Promise<SkillImportResult>;
-      saveMcpConfig: (payload: McpConfigSavePayload) => Promise<McpConfigSaveResult>;
-      testMcpServers: (payload: McpTestPayload) => Promise<McpTestResult>;
+	      importSkillDirectory: (payload: SkillImportPayload) => Promise<SkillImportResult>;
+	      saveMcpConfig: (payload: McpConfigSavePayload) => Promise<McpConfigSaveResult>;
+	      saveMcpEnvSecret: (payload: McpEnvSecretSavePayload) => Promise<McpEnvSecretSaveResult>;
+	      testMcpServers: (payload: McpTestPayload) => Promise<McpTestResult>;
       getConversationHistory: () => Promise<ConversationStore>;
       saveConversationHistory: (history: ConversationStore) => Promise<ConversationStore>;
       getAutomations: () => Promise<AutomationStore>;
@@ -24,9 +26,13 @@ declare global {
 	      openWorkspaceEditor: (options: OpenWorkspaceEditorOptions) => Promise<OpenWorkspaceEditorResult>;
 	      checkRuntime: (settings?: Partial<DesktopSettings>) => Promise<RuntimeCheck>;
 	      getRuntimeSnapshot: () => Promise<RuntimeSnapshot>;
+	      getRuntimeOrchestratorSnapshot: () => Promise<RuntimeOrchestratorSnapshot>;
+	      startRuntimeTurn: (payload: RuntimeTurnStartPayload) => Promise<RuntimeTurnStartResult>;
+	      cancelRuntimeTurn: (payload: RuntimeTurnCancelPayload) => Promise<RuntimeTurnCancelResult>;
 	      getGitStatus: (workspacePath: string) => Promise<GitStatus>;
       initGitRepository: (workspacePath: string) => Promise<GitActionResult>;
       setGitRemote: (payload: GitRemotePayload) => Promise<GitActionResult>;
+      switchGitBranch: (payload: GitBranchSwitchPayload) => Promise<GitActionResult>;
       fetchGitRepository: (payload: GitWorkspacePayload) => Promise<GitActionResult>;
       pullGitRepository: (payload: GitWorkspacePayload) => Promise<GitActionResult>;
       pushGitRepository: (payload: GitWorkspacePayload) => Promise<GitActionResult>;
@@ -48,6 +54,8 @@ declare global {
 	      onTerminalExit: (callback: (exit: { exitCode: number; signal?: number }) => void) => () => void;
 	      onRuntimeSnapshot: (callback: (snapshot: RuntimeSnapshot) => void) => () => void;
 	      onRuntimeEvent: (callback: (event: RuntimeEvent) => void) => () => void;
+	      onRuntimeOrchestratorSnapshot: (callback: (snapshot: RuntimeOrchestratorSnapshot) => void) => () => void;
+	      onRuntimeTurnEvent: (callback: (event: RuntimeTurnEvent) => void) => () => void;
 	      onRemoteStatus: (callback: (status: RemoteBridgeStatus) => void) => () => void;
 	    };
   }
@@ -99,6 +107,7 @@ declare global {
     mcpEnabled: boolean;
     allowShell: boolean;
     maxSubagents: number;
+    processStreamEnabled: boolean;
     harnessEnabled: boolean;
     launchAction: LaunchAction;
     rememberWorkspace: boolean;
@@ -165,24 +174,41 @@ declare global {
     content: string;
   }
 
-  interface McpConfigSaveResult {
-    ok: boolean;
-    error?: string;
-    path?: string;
-    content?: string;
-  }
-
-  interface McpTestPayload {
-    settings: DesktopSettings;
-  }
-
-	  interface McpServerTest {
-	    id: string;
-	    command: string;
-	    args: string[];
-	    url?: string;
+	  interface McpConfigSaveResult {
 	    ok: boolean;
-	    commandFound: boolean;
+	    error?: string;
+	    path?: string;
+	    content?: string;
+	  }
+
+	  interface McpEnvSecretSavePayload {
+	    name: string;
+	    value: string;
+	  }
+
+	  interface McpEnvSecretSaveResult {
+	    ok: boolean;
+	    key?: string;
+	    configured?: boolean;
+	    source?: "desktop" | "environment" | "missing";
+	    error?: string;
+	  }
+
+	  interface McpTestPayload {
+	    settings: DesktopSettings;
+	  }
+
+	  type McpAdapterStatus = "ready" | "needs-auth" | "needs-config" | "command-missing" | "invalid-url";
+
+		  interface McpServerTest {
+		    id: string;
+		    command: string;
+		    args: string[];
+		    url?: string;
+		    ok: boolean;
+		    injectable: boolean;
+		    status: McpAdapterStatus;
+		    commandFound: boolean;
     missingEnv: string[];
     warnings: string[];
     error?: string;
@@ -215,6 +241,7 @@ declare global {
     projectId: string;
     projectName: string;
     workspacePath: string;
+    runtimeThreadId?: string;
     title: string;
     createdAt: string;
     updatedAt: string;
@@ -354,10 +381,108 @@ declare global {
 	    events: RuntimeEvent[];
 	  }
 
-	  interface GitRemoteInfo {
+	  type RuntimeTurnStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
+
+	  interface RuntimeTurnStartPayload {
+	    conversationId: string;
+	    workspacePath: string;
+	    prompt: string;
+	    model?: string;
+	    replyMessageId?: string;
+	    mode?: string;
+	    settings?: Partial<DesktopSettings>;
+	  }
+
+	  interface RuntimeTurnStartResult {
+	    ok: boolean;
+	    queued?: boolean;
+	    turnId?: string;
+	    conversationId?: string;
+	    threadId?: string;
+	    snapshot?: RuntimeOrchestratorSnapshot;
+	    error?: string;
+	    runtime?: RuntimeCheck;
+	  }
+
+	  interface RuntimeTurnCancelPayload {
+	    conversationId?: string;
+	    turnId?: string;
+	  }
+
+	  interface RuntimeTurnCancelResult {
+	    ok: boolean;
+	    cancelled: number;
+	    snapshot: RuntimeOrchestratorSnapshot;
+	  }
+
+	  interface RuntimeTurn {
+	    turnId: string;
+	    conversationId: string;
+	    threadId: string;
+	    status: RuntimeTurnStatus;
+	    prompt: string;
+	    output: string;
+	    error: string;
+	    queuedAt: string;
+	    startedAt: string;
+	    completedAt: string;
+	    replyMessageId: string;
+	    queuePosition: number;
+	  }
+
+	  interface RuntimeConversationState {
+	    conversationId: string;
+	    workspacePath: string;
+	    threadId: string;
+	    activeTurnId: string;
+	    queuedTurnIds: string[];
+	    status: "idle" | "queued" | "running" | "cancelling";
+	    updatedAt: string;
+	  }
+
+	  interface RuntimeOrchestratorSnapshot {
+	    status: "idle" | "queued" | "running";
+	    maxConcurrent: number;
+	    maxConcurrentSessions?: number;
+	    activeCount: number;
+	    queueDepth: number;
+	    counts: {
+	      total: number;
+	      queued: number;
+	      running: number;
+	      cancelling: number;
+	      completed: number;
+	      failed: number;
+	      cancelled: number;
+	    };
+	    conversations: RuntimeConversationState[];
+	    turns: RuntimeTurn[];
+	    events: RuntimeEvent[];
+	  }
+
+	  interface RuntimeTurnEvent extends Partial<RuntimeTurn> {
+	    type?: string;
+	    event?: string;
+	    at?: string;
+	    detail?: string;
+	    delta?: string;
+	    message?: string;
+	    source?: string;
+	  }
+
+  interface GitRemoteInfo {
     name: string;
     fetchUrl: string;
     pushUrl: string;
+  }
+
+  interface GitBranchInfo {
+    name: string;
+    type: "local" | "remote";
+    current: boolean;
+    upstream: string;
+    commit: string;
+    subject: string;
   }
 
   interface GitChangeInfo {
@@ -382,6 +507,7 @@ declare global {
     staged: number;
     unstaged: number;
     untracked: number;
+    branches: GitBranchInfo[];
     remotes: GitRemoteInfo[];
     originUrl: string;
     lastCommit: {
@@ -399,6 +525,10 @@ declare global {
 
   interface GitRemotePayload extends GitWorkspacePayload {
     remoteUrl: string;
+  }
+
+  interface GitBranchSwitchPayload extends GitWorkspacePayload {
+    branchName: string;
   }
 
   interface GitCommitPayload extends GitWorkspacePayload {

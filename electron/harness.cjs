@@ -17,12 +17,12 @@ const DEFAULT_PATH = [
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
-const DEFAULT_ENABLED_SKILLS = ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"];
+const DEFAULT_ENABLED_SKILLS = ["superpowers", "ui-ux-pro-max", "cron-scheduler", "skill-downloader"];
 const LEGACY_DEFAULT_SKILLS = ["superpowers", "ui-ux-design"];
 const DEFAULT_MAX_SUBAGENTS = 10;
 const LEGACY_DESKTOP_MAX_SUBAGENTS = 3;
 const DESKTOP_MANAGED_CONFIG_FILE = "deepseek.desktop.managed.toml";
-const SKILL_PRESET_VERSION = 2;
+const SKILL_PRESET_VERSION = 4;
 const AUTOMATION_STORE_VERSION = 1;
 const AUTOMATION_CRON_BEGIN = "# BEGIN DeepSeek TUI Desktop automation";
 const AUTOMATION_CRON_END = "# END DeepSeek TUI Desktop automation";
@@ -136,34 +136,108 @@ const SKILL_DOWNLOADER_SKILL_CONTENT = [
   "If the source is a local directory, find `SKILL.md`, copy the containing directory to the destination, then verify the copied `SKILL.md`. Preserve support files such as `scripts/`, `templates/`, and `examples/`."
 ].join("\n");
 
+const LEGACY_SUPERPOWERS_SKILL_CONTENT = [
+  "# Superpowers",
+  "",
+  "Use this skill to strengthen planning, task decomposition, code editing, verification, and final reporting.",
+  "",
+  "- Start by identifying the user's concrete goal and the workspace scope.",
+  "- Prefer small, reversible edits that match the existing codebase.",
+  "- Verify changes with the narrowest useful command before reporting completion.",
+  "- Surface blockers, assumptions, and residual risk clearly."
+].join("\n");
+
+const SUPERPOWERS_SKILL_CONTENT = [
+  "---",
+  "name: superpowers",
+  "description: Use for planning, task decomposition, code edits, MCP/tool readiness checks, verification, and concise final reporting.",
+  "---",
+  "",
+  "# Superpowers",
+  "",
+  "Use this skill to keep desktop Agent work grounded in the user's real goal, the current workspace, and verified runtime state.",
+  "",
+  "## Workflow",
+  "",
+  "1. Identify the user's concrete goal, target workspace, and whether they asked for planning, implementation, or review.",
+  "2. Inspect the relevant files or runtime state before making assumptions.",
+  "3. Break the work into small reversible steps that match the existing codebase.",
+  "4. Before relying on an external tool, distinguish selected, injected, authenticated, connected, and callable states.",
+  "5. Verify changes with the narrowest useful command first, then broader checks when the change touches shared behavior.",
+  "6. Report changed surfaces, verification evidence, blockers, and remaining risk.",
+  "",
+  "## MCP Boundaries",
+  "",
+  "- Treat MCP selection in the UI as intent only; it does not prove the MCP is callable.",
+  "- Treat launch-time injection as allowed only when adapter preflight reports the MCP as ready.",
+  "- If a server is missing authentication, has a placeholder URL, or has a missing command, say it is blocked and use another available tool.",
+  "- Never claim GitHub, Slack, Notion, Figma, database, payment, or remote MCP access is available until preflight or an actual tool call proves it.",
+  "- Do not write API keys or tokens into Skill files, prompts, logs, generated docs, or MCP JSON examples.",
+  "",
+  "## Output",
+  "",
+  "- Keep user updates short and factual.",
+  "- When blocked, name the missing credential or configuration and the exact next action.",
+  "- When complete, separate verified behavior from unverified or skipped checks."
+].join("\n");
+
+const LEGACY_UI_UX_DESIGN_SKILL_CONTENT = [
+  "# UI/UX Design",
+  "",
+  "Use this skill for product UI work, desktop app polish, and visual interaction checks.",
+  "",
+  "- Keep primary workflows visible and reduce default configuration clutter.",
+  "- Use familiar controls: icon buttons for tools, toggles for binary settings, and compact panels for advanced options.",
+  "- Check spacing, overflow, text fit, empty states, disabled states, and responsive constraints.",
+  "- Prefer restrained, work-focused surfaces for developer tools."
+].join("\n");
+
+const UI_UX_DESIGN_SKILL_CONTENT = [
+  "---",
+  "name: ui-ux-pro-max",
+  "description: Use when designing, building, or refining frontend UI/UX: layouts, components, visual systems, typography, color, and UX patterns.",
+  "---",
+  "",
+  "# UI/UX Pro Max - Design Intelligence",
+  "",
+  "This fallback is used only when the packaged UI/UX Pro Max directory is unavailable. The normal preset is imported from `electron/skills/ui-ux-pro-max` with its `scripts/` and `data/` support files.",
+  "",
+  "## Product Principles",
+  "",
+  "- Prioritize the user's active workflow over configuration density.",
+  "- Use familiar controls: icon buttons for tools, toggles for binary settings, inputs for values, menus for option sets, and compact panels for advanced flows.",
+  "- Developer tools should be quiet, work-focused, and scannable; avoid marketing layouts, decorative cards, and oversized headings.",
+  "- Keep advanced configuration hidden until the user opens the relevant tool page.",
+  "",
+  "## State Clarity",
+  "",
+  "- Do not collapse different states into one label. Separate selected, saved, injected, authenticated, connected, callable, failed, and disabled.",
+  "- For MCP and other external tools, show blocked states near the action that would otherwise imply availability.",
+  "- A missing credential, placeholder URL, invalid URL, or missing command should read as blocked and should explain the exact missing piece.",
+  "- Keep status chips short and pair them with concise helper text when the consequence matters.",
+  "",
+  "## Visual QA",
+  "",
+  "- Check spacing, overflow, text fit, empty states, disabled states, hover/focus states, and narrow-window behavior.",
+  "- Stable tool rows and cards should not resize unpredictably when warnings or long paths appear.",
+  "- Verify visible UI after code changes with a browser or app preview when available."
+].join("\n");
+
 const PRESET_SKILLS = {
   superpowers: {
     dir: "superpowers",
     name: "Superpowers",
-    content: [
-      "# Superpowers",
-      "",
-      "Use this skill to strengthen planning, task decomposition, code editing, verification, and final reporting.",
-      "",
-      "- Start by identifying the user's concrete goal and the workspace scope.",
-      "- Prefer small, reversible edits that match the existing codebase.",
-      "- Verify changes with the narrowest useful command before reporting completion.",
-      "- Surface blockers, assumptions, and residual risk clearly."
-    ].join("\n")
+    content: SUPERPOWERS_SKILL_CONTENT,
+    sourceDir: path.join("skills", "superpowers"),
+    legacyContent: [LEGACY_SUPERPOWERS_SKILL_CONTENT, SUPERPOWERS_SKILL_CONTENT]
   },
-  "ui-ux-design": {
-    dir: "ui-ux-design",
-    name: "UI/UX Design",
-    content: [
-      "# UI/UX Design",
-      "",
-      "Use this skill for product UI work, desktop app polish, and visual interaction checks.",
-      "",
-      "- Keep primary workflows visible and reduce default configuration clutter.",
-      "- Use familiar controls: icon buttons for tools, toggles for binary settings, and compact panels for advanced options.",
-      "- Check spacing, overflow, text fit, empty states, disabled states, and responsive constraints.",
-      "- Prefer restrained, work-focused surfaces for developer tools."
-    ].join("\n")
+  "ui-ux-pro-max": {
+    dir: "ui-ux-pro-max",
+    name: "UI/UX Pro Max",
+    content: UI_UX_DESIGN_SKILL_CONTENT,
+    sourceDir: path.join("skills", "ui-ux-pro-max"),
+    legacyDirs: ["ui-ux-design"],
+    legacyContent: [LEGACY_UI_UX_DESIGN_SKILL_CONTENT, UI_UX_DESIGN_SKILL_CONTENT]
   },
   "cron-scheduler": {
     dir: "cron-scheduler",
@@ -226,7 +300,9 @@ const MCP_PRESETS = {
     command: "npx",
     args: ["-y", "@modelcontextprotocol/server-postgres", process.env.POSTGRES_CONNECTION_STRING || "postgresql://localhost/postgres"],
     env() {
-      return {};
+      return {
+        POSTGRES_CONNECTION_STRING: process.env.POSTGRES_CONNECTION_STRING || ""
+      };
     }
   },
   puppeteer: {
@@ -306,7 +382,9 @@ const MCP_PRESETS = {
     command: "npx",
     args: ["-y", "mcp-remote", process.env.MCP_REMOTE_URL || "https://example.com/mcp"],
     env() {
-      return {};
+      return {
+        MCP_REMOTE_URL: process.env.MCP_REMOTE_URL || ""
+      };
     }
   },
   pannel: {
@@ -345,6 +423,7 @@ function defaultSettings() {
     mcpEnabled: false,
     allowShell: false,
     maxSubagents: DEFAULT_MAX_SUBAGENTS,
+    processStreamEnabled: true,
     harnessEnabled: false,
     launchAction: "tui",
     rememberWorkspace: true,
@@ -397,6 +476,15 @@ function unpackAsar(binaryPath) {
   return binaryPath.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
 }
 
+function resolveBundledResourcePath(candidatePath) {
+  const candidate = path.resolve(candidatePath || "");
+  const unpackedCandidate = unpackAsar(candidate);
+  if (unpackedCandidate !== candidate && fs.existsSync(unpackedCandidate)) {
+    return unpackedCandidate;
+  }
+  return candidate;
+}
+
 function findOnPath(command) {
   const result = spawnSync(process.platform === "win32" ? "where" : "which", [command], {
     encoding: "utf8",
@@ -440,7 +528,8 @@ function sanitizeSettings(settings) {
   safeSettings.mobileBridgeEnabled = Boolean(safeSettings.mobileBridgeEnabled);
   safeSettings.skillsEnabled = safeSettings.skillsEnabled !== false;
   safeSettings.mcpEnabled = Boolean(safeSettings.mcpEnabled);
-  safeSettings.harnessEnabled = Boolean(safeSettings.harnessEnabled);
+  safeSettings.processStreamEnabled = safeSettings.processStreamEnabled ?? true;
+  safeSettings.processStreamEnabled = safeSettings.processStreamEnabled !== false;
   safeSettings.mobileRemoteControlEnabled = Boolean(safeSettings.mobileRemoteControlEnabled);
   safeSettings.updatePushEnabled = Boolean(safeSettings.updatePushEnabled);
   safeSettings.mobileBridgeHost = typeof safeSettings.mobileBridgeHost === "string" && safeSettings.mobileBridgeHost.trim()
@@ -455,6 +544,7 @@ function sanitizeSettings(settings) {
   }
   safeSettings.maxSubagents = normalizeMaxSubagents(settings?.maxSubagents);
   safeSettings.enabledSkills = normalizeEnabledSkills(safeSettings);
+  safeSettings.harnessEnabled = false;
   safeSettings.skillPresetVersion = SKILL_PRESET_VERSION;
   return safeSettings;
 }
@@ -466,8 +556,8 @@ function normalizeMaxSubagents(value) {
     : number;
 }
 
-function processStreamReasoningEffort(settings) {
-  return settings?.harnessEnabled ? "max" : "off";
+function desktopProcessReasoningEffort(settings) {
+  return settings?.processStreamEnabled === false ? "off" : "max";
 }
 
 function enabledList(values) {
@@ -475,7 +565,13 @@ function enabledList(values) {
 }
 
 function mcpFeatureArgs(options = {}) {
-  const hasPresetConfig = enabledList(options.enabledMcpServers).length > 0;
+  if (typeof options.runtimeMcpReady === "boolean") {
+    return options.mcpEnabled && options.runtimeMcpReady ? ["--enable", "mcp"] : [];
+  }
+  const runtimeMcpServerIds = Array.isArray(options.runtimeMcpServerIds)
+    ? enabledList(options.runtimeMcpServerIds)
+    : enabledList(options.enabledMcpServers);
+  const hasPresetConfig = runtimeMcpServerIds.length > 0;
   const hasCustomConfig = Boolean(String(options.mcpConfigPath || "").trim());
   return options.mcpEnabled && (hasPresetConfig || hasCustomConfig) ? ["--enable", "mcp"] : [];
 }
@@ -488,6 +584,9 @@ function normalizeEnabledSkills(settings) {
   const selected = enabledList(settings.enabledSkills);
   const skillPresetVersion = Number(settings.skillPresetVersion) || 0;
   const shouldRunSkillMigration = skillPresetVersion < SKILL_PRESET_VERSION;
+  const selectedWithRenamedPresets = shouldRunSkillMigration
+    ? selected.map((id) => id === "ui-ux-design" ? "ui-ux-pro-max" : id)
+    : selected;
   const stillOnOldDefaults = shouldRunSkillMigration
     && selected.length === LEGACY_DEFAULT_SKILLS.length
     && LEGACY_DEFAULT_SKILLS.every((id) => selected.includes(id));
@@ -496,11 +595,9 @@ function normalizeEnabledSkills(settings) {
     && LEGACY_DEFAULT_SKILLS.every((id) => selected.includes(id))
     && selected.includes("cron-scheduler");
 
-  if (stillOnOldDefaults || oldDefaultsWithCron) {
-    return [...DEFAULT_ENABLED_SKILLS];
-  }
+  const normalized = stillOnOldDefaults || oldDefaultsWithCron ? [...DEFAULT_ENABLED_SKILLS] : selectedWithRenamedPresets;
 
-  return selected;
+  return normalized.filter((id) => id !== "harness-probe-rollback");
 }
 
 function safeTemplateText(value) {
@@ -647,6 +744,107 @@ function copySkillDirectory(sourceDir, targetDir) {
   });
 }
 
+function copyBundledSkillDirectory(sourceDir, targetDir) {
+  const source = resolveBundledResourcePath(path.isAbsolute(sourceDir) ? sourceDir : path.resolve(__dirname, sourceDir));
+  const target = path.resolve(targetDir);
+  if (!fs.existsSync(source) || !fs.existsSync(path.join(source, "SKILL.md"))) {
+    return false;
+  }
+  if (fs.existsSync(path.join(target, "SKILL.md"))) {
+    return false;
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.cpSync(source, target, {
+    recursive: true,
+    filter: (candidate) => {
+      const base = path.basename(candidate);
+      return base !== ".git" && base !== "node_modules" && base !== ".DS_Store";
+    }
+  });
+  return true;
+}
+
+function bundledSkillIds(preset) {
+  const sourceDir = preset?.bundleDir || preset?.sourceDir;
+  if (!sourceDir) {
+    return [];
+  }
+  return discoverSkillIds(resolveBundledResourcePath(path.resolve(__dirname, sourceDir)));
+}
+
+function bundledChildSkillIds() {
+  return new Set(Object.values(PRESET_SKILLS).flatMap((preset) => bundledSkillIds(preset)));
+}
+
+function runtimeSkillIdsForSelection(selectedIds) {
+  const ids = [];
+  for (const id of enabledList(selectedIds)) {
+    const preset = PRESET_SKILLS[id];
+    if (preset?.bundleDir) {
+      ids.push(...bundledSkillIds(preset));
+    } else if (preset?.sourceDir) {
+      ids.push(preset.dir);
+    } else {
+      ids.push(id);
+    }
+  }
+  return Array.from(new Set(ids));
+}
+
+function removeLegacyBundledSkillSplits(root, preset) {
+  const sourceRoot = resolveBundledResourcePath(path.resolve(__dirname, preset.sourceDir || preset.bundleDir || ""));
+  for (const skillId of bundledSkillIds(preset)) {
+    const sourceSkill = path.join(sourceRoot, skillId, "SKILL.md");
+    const targetDir = path.join(root, skillId);
+    const targetSkill = path.join(targetDir, "SKILL.md");
+    try {
+      if (
+        fs.existsSync(sourceSkill)
+        && fs.existsSync(targetSkill)
+        && fs.readFileSync(sourceSkill, "utf8") === fs.readFileSync(targetSkill, "utf8")
+      ) {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+      }
+    } catch {
+      // Keep user-edited or unreadable directories rather than risking data loss.
+    }
+  }
+}
+
+function removeLegacyPresetDirs(root, preset) {
+  for (const legacyDir of preset.legacyDirs || []) {
+    const targetDir = path.join(root, legacyDir);
+    const targetSkill = path.join(targetDir, "SKILL.md");
+    try {
+      if (!fs.existsSync(targetSkill)) continue;
+      const content = fs.readFileSync(targetSkill, "utf8");
+      const frontmatter = parseSkillFrontmatter(content);
+      if (
+        preset.legacyContent?.includes(content)
+        || frontmatter.name === legacyDir
+        || skillHeading(content) === preset.name.replace(" Pro Max", " Design")
+      ) {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+      }
+    } catch {
+      // Keep user-edited or unreadable directories rather than risking data loss.
+    }
+  }
+}
+
+function shouldInstallBundledPreset(targetDir, preset) {
+  const targetSkill = path.join(targetDir, "SKILL.md");
+  if (!fs.existsSync(targetSkill)) {
+    return true;
+  }
+  try {
+    const content = fs.readFileSync(targetSkill, "utf8");
+    return preset.legacyContent?.includes(content) || false;
+  } catch {
+    return false;
+  }
+}
+
 function ensureInsideDirectory(parentDir, candidatePath) {
   const relativePath = path.relative(parentDir, candidatePath);
   return relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
@@ -655,7 +853,7 @@ function ensureInsideDirectory(parentDir, candidatePath) {
 function copyPresetSupportFiles(skillDir, preset) {
   const files = Array.isArray(preset.files) ? preset.files : [];
   for (const file of files) {
-    const sourcePath = path.resolve(__dirname, file.source || "");
+    const sourcePath = resolveBundledResourcePath(path.resolve(__dirname, file.source || ""));
     const targetPath = path.resolve(skillDir, file.target || "");
     if (!ensureInsideDirectory(skillDir, targetPath)) {
       throw new Error(`Invalid skill support file path: ${file.target || ""}`);
@@ -807,6 +1005,12 @@ function normalizeAutomationTask(input = {}, settings = {}, existing = {}) {
   const timezone = trimString(input.timezone || existing.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", 80);
   const workspacePath = normalizeWorkspace(input.workspacePath || existing.workspacePath || settings.workspacePath);
   const status = normalizeAutomationStatus(input, existing);
+  const selectedSkills = Array.isArray(input.enabledSkills)
+    ? input.enabledSkills
+    : Array.isArray(existing.enabledSkills)
+      ? existing.enabledSkills
+      : [];
+  const enabledSkills = enabledList(selectedSkills).filter((id) => id !== "harness-probe-rollback");
   const task = {
     id: trimString(input.id || existing.id || createId("automation"), 100),
     kind: "cron",
@@ -834,12 +1038,12 @@ function normalizeAutomationTask(input = {}, settings = {}, existing = {}) {
     baseUrl: trimString(input.baseUrl || existing.baseUrl || settings.baseUrl || defaultBaseUrlForProvider(settings.provider), 400),
     mcpConfigPath: trimString(input.mcpConfigPath || existing.mcpConfigPath || "", 1000),
     skillsDir: trimString(input.skillsDir || existing.skillsDir || "", 1000),
-    enabledSkills: Array.isArray(input.enabledSkills) ? input.enabledSkills : Array.isArray(existing.enabledSkills) ? existing.enabledSkills : [],
+    enabledSkills,
     mcpEnabled: Boolean(input.mcpEnabled ?? existing.mcpEnabled),
     enabledMcpServers: Array.isArray(input.enabledMcpServers) ? input.enabledMcpServers : Array.isArray(existing.enabledMcpServers) ? existing.enabledMcpServers : [],
     allowShell: Boolean(input.allowShell ?? existing.allowShell),
     maxSubagents: normalizeMaxSubagents(input.maxSubagents || existing.maxSubagents || settings.maxSubagents),
-    harnessEnabled: Boolean(input.harnessEnabled ?? existing.harnessEnabled ?? settings.harnessEnabled),
+    harnessEnabled: false,
     error: "",
     createdAt: existing.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -905,6 +1109,56 @@ function parseGitChanges(output) {
     }));
 }
 
+function parseGitBranches(output, type, currentBranch = "") {
+  return String(output || "")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const [nameRaw = "", upstream = "", head = "", commit = "", subject = ""] = line.split("\0");
+      const name = nameRaw.trim();
+      return {
+        name,
+        type,
+        current: type === "local" && (head.trim() === "*" || name === currentBranch),
+        upstream: upstream.trim(),
+        commit: commit.trim(),
+        subject: subject.trim()
+      };
+    })
+    .filter((branch) => branch.name && !/\/HEAD$/.test(branch.name));
+}
+
+function uniqueGitBranches(branches) {
+  const seen = new Set();
+  return branches.filter((branch) => {
+    const key = `${branch.type}:${branch.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function listGitBranches(repoRoot, currentBranch) {
+  const format = "%(refname:short)%00%(upstream:short)%00%(HEAD)%00%(objectname:short)%00%(contents:subject)";
+  const localResult = runGit(["for-each-ref", `--format=${format}`, "refs/heads"], repoRoot, 10000);
+  const remoteResult = runGit(["for-each-ref", `--format=${format}`, "refs/remotes"], repoRoot, 10000);
+  const branches = uniqueGitBranches([
+    ...parseGitBranches(localResult.status === 0 ? localResult.stdout : "", "local", currentBranch),
+    ...parseGitBranches(remoteResult.status === 0 ? remoteResult.stdout : "", "remote", currentBranch)
+  ]);
+  if (currentBranch && currentBranch !== "HEAD" && !branches.some((branch) => branch.type === "local" && branch.name === currentBranch)) {
+    branches.unshift({
+      name: currentBranch,
+      type: "local",
+      current: true,
+      upstream: "",
+      commit: "",
+      subject: ""
+    });
+  }
+  return branches;
+}
+
 function parseAheadBehind(output) {
   const [aheadRaw, behindRaw] = String(output || "").trim().split(/\s+/);
   return {
@@ -938,6 +1192,10 @@ function missingEnvKeys(env) {
     .map(([key]) => key);
 }
 
+function mcpConfigEnvKeys(keys) {
+  return keys.filter((key) => /URL|URI|CONNECTION|HOST|BASE/i.test(key));
+}
+
 function mcpConfigWarnings(id, args, env) {
   const warnings = [];
   const joinedArgs = normalizeMcpArgs(args).join(" ");
@@ -965,6 +1223,45 @@ function validMcpServerUrl(url) {
   } catch {
     return false;
   }
+}
+
+function mcpServerDiagnostic(entry) {
+  const hasUrl = Boolean(String(entry.url || "").trim());
+  const urlValid = validMcpServerUrl(entry.url);
+  const commandFound = hasUrl ? true : commandExists(entry.command);
+  const missingEnv = missingEnvKeys(entry.env);
+  const missingConfigEnv = mcpConfigEnvKeys(missingEnv);
+  const configWarnings = mcpConfigWarnings(entry.id, entry.args, entry.env);
+  const warnings = [
+    ...configWarnings,
+    ...(hasUrl && !urlValid ? ["Server URL must start with http:// or https://."] : []),
+    ...(!hasUrl && commandFound ? [] : hasUrl ? [] : ["Command is not available in PATH."]),
+    ...(missingEnv.length > 0 ? [`Missing environment variables: ${missingEnv.join(", ")}`] : [])
+  ];
+
+  let status = "ready";
+  if (hasUrl && !urlValid) {
+    status = "invalid-url";
+  } else if (!hasUrl && !commandFound) {
+    status = "command-missing";
+  } else if (missingConfigEnv.length > 0 || configWarnings.length > 0) {
+    status = "needs-config";
+  } else if (missingEnv.length > 0) {
+    status = "needs-auth";
+  }
+
+  return {
+    id: entry.id,
+    command: entry.command,
+    args: entry.args,
+    url: entry.url,
+    ok: status === "ready",
+    injectable: status === "ready",
+    status,
+    commandFound,
+    missingEnv,
+    warnings
+  };
 }
 
 function normalizeGitCommitMessage(message) {
@@ -1029,6 +1326,7 @@ function sanitizeConversationStore(history) {
         projectId,
         projectName: trimString(session?.projectName || project?.name || projectNameFromWorkspace(sessionWorkspace), 120),
         workspacePath: sessionWorkspace,
+        runtimeThreadId: trimString(session?.runtimeThreadId, 120),
         title: trimString(session?.title, 120),
         createdAt,
         updatedAt: trimString(session?.updatedAt, 40) || createdAt,
@@ -1126,7 +1424,13 @@ class DeepSeekDesktopHarness extends EventEmitter {
         apiKeys: {
           deepseek: trimSecret(parsed?.apiKeys?.deepseek),
           "nvidia-nim": trimSecret(parsed?.apiKeys?.["nvidia-nim"])
-        }
+        },
+        mcpEnv: Object.fromEntries(
+          Object.entries(parsed?.mcpEnv || {})
+            .filter(([key]) => /^[A-Z0-9_]+$/.test(key))
+            .map(([key, value]) => [key, trimSecret(value)])
+            .filter(([, value]) => Boolean(value))
+        )
       };
     } catch {
       return {
@@ -1134,7 +1438,8 @@ class DeepSeekDesktopHarness extends EventEmitter {
         apiKeys: {
           deepseek: "",
           "nvidia-nim": ""
-        }
+        },
+        mcpEnv: {}
       };
     }
   }
@@ -1145,7 +1450,13 @@ class DeepSeekDesktopHarness extends EventEmitter {
       apiKeys: {
         deepseek: trimSecret(store?.apiKeys?.deepseek),
         "nvidia-nim": trimSecret(store?.apiKeys?.["nvidia-nim"])
-      }
+      },
+      mcpEnv: Object.fromEntries(
+        Object.entries(store?.mcpEnv || {})
+          .filter(([key]) => /^[A-Z0-9_]+$/.test(key))
+          .map(([key, value]) => [key, trimSecret(value)])
+          .filter(([, value]) => Boolean(value))
+      )
     };
     fs.mkdirSync(this.app.getPath("userData"), { recursive: true });
     fs.writeFileSync(this.userDataPath("secrets.json"), JSON.stringify(safeStore, null, 2), { mode: 0o600 });
@@ -1180,6 +1491,35 @@ class DeepSeekDesktopHarness extends EventEmitter {
       }
     });
     return { ok: true, provider, hasKey: Boolean(next.apiKeys[provider]) };
+  }
+
+  readMcpEnvSecret(name) {
+    const key = String(name || "").trim().toUpperCase();
+    if (!/^[A-Z0-9_]+$/.test(key)) return "";
+    return process.env[key] || this.readSecretStore().mcpEnv[key] || "";
+  }
+
+  saveMcpEnvSecret(payload = {}) {
+    const key = String(payload.name || payload.key || "").trim().toUpperCase();
+    if (!/^[A-Z0-9_]+$/.test(key)) {
+      return { ok: false, error: "Environment variable name is invalid.", key };
+    }
+
+    const value = trimSecret(payload.value);
+    const current = this.readSecretStore();
+    const nextMcpEnv = { ...current.mcpEnv };
+    if (value) {
+      nextMcpEnv[key] = value;
+    } else {
+      delete nextMcpEnv[key];
+    }
+    const next = this.writeSecretStore({ ...current, mcpEnv: nextMcpEnv });
+    return {
+      ok: true,
+      key,
+      configured: Boolean(process.env[key] || next.mcpEnv[key]),
+      source: process.env[key] ? "environment" : next.mcpEnv[key] ? "desktop" : "missing"
+    };
   }
 
   readConversationHistory() {
@@ -1292,7 +1632,6 @@ const env = {
   DEEPSEEK_BASE_URL: task.baseUrl || "https://api.deepseek.com"
 };
 
-if (task.harnessEnabled) env.DEEPSEEK_DESKTOP_HARNESS = "1";
 if (apiKey) {
   env.DEEPSEEK_API_KEY = apiKey;
   if (provider === "nvidia-nim") {
@@ -1356,7 +1695,13 @@ process.exit(typeof result.status === "number" ? result.status : 1);
   automationCommand(task, settings) {
     const runtime = this.resolveRuntime(settings);
     const binary = runtime.selected || "deepseek";
-    const args = ["exec", ...mcpFeatureArgs(settings), "--auto", task.prompt].filter(Boolean);
+    const workspacePath = normalizeWorkspace(settings.workspacePath || task.workspacePath);
+    const runtimeMcpServerIds = this.runtimeMcpServerIds(settings, workspacePath);
+    const args = ["exec", ...mcpFeatureArgs({
+      ...settings,
+      runtimeMcpServerIds,
+      runtimeMcpReady: this.runtimeMcpReady(settings, workspacePath)
+    }), "--auto", task.prompt].filter(Boolean);
     return {
       runtime,
       args,
@@ -1384,6 +1729,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     const runnerPath = this.writeAutomationRunner();
     const nodePath = findOnPath("node");
     const apiModel = apiModelForProvider(settingsForRun.provider, settingsForRun.model);
+    const runtimeMcpServerIds = this.runtimeMcpServerIds(settingsForRun, workspacePath);
 
     fs.mkdirSync(path.dirname(cronPath), { recursive: true });
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
@@ -1405,10 +1751,10 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       envLines.push(`DEEPSEEK_SKILLS_DIR=${cronEnvValue(skillsDir)}`);
     }
     if (settingsForRun.skillsEnabled !== false && settingsForRun.enabledSkills) {
-      envLines.push(`DEEPSEEK_DESKTOP_ENABLED_SKILLS=${cronEnvValue(enabledList(settingsForRun.enabledSkills).join(","))}`);
+      envLines.push(`DEEPSEEK_DESKTOP_ENABLED_SKILLS=${cronEnvValue(runtimeSkillIdsForSelection(settingsForRun.enabledSkills).join(","))}`);
     }
-    if (settingsForRun.mcpEnabled && settingsForRun.enabledMcpServers) {
-      envLines.push(`DEEPSEEK_DESKTOP_ENABLED_MCP=${cronEnvValue(enabledList(settingsForRun.enabledMcpServers).join(","))}`);
+    if (settingsForRun.mcpEnabled && runtimeMcpServerIds.length > 0) {
+      envLines.push(`DEEPSEEK_DESKTOP_ENABLED_MCP=${cronEnvValue(runtimeMcpServerIds.join(","))}`);
     }
     if (settingsForRun.allowShell) {
       envLines.push("DEEPSEEK_ALLOW_SHELL=1");
@@ -1416,9 +1762,6 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     const maxSubagents = normalizeMaxSubagents(settingsForRun.maxSubagents);
     if (maxSubagents) {
       envLines.push(`DEEPSEEK_MAX_SUBAGENTS=${cronEnvValue(String(maxSubagents))}`);
-    }
-    if (settingsForRun.harnessEnabled) {
-      envLines.push("DEEPSEEK_DESKTOP_HARNESS=1");
     }
     envLines.push(`DEEPSEEK_DESKTOP_USER_DATA=${cronEnvValue(this.app.getPath("userData"))}`);
 
@@ -1481,12 +1824,12 @@ process.exit(typeof result.status === "number" ? result.status : 1);
         baseUrl: settingsForRun.baseUrl || defaultBaseUrlForProvider(settingsForRun.provider),
         mcpConfigPath,
         skillsDir,
-        enabledSkills: enabledList(settingsForRun.enabledSkills),
+        enabledSkills: runtimeSkillIdsForSelection(settingsForRun.enabledSkills),
         mcpEnabled: Boolean(settingsForRun.mcpEnabled),
-        enabledMcpServers: enabledList(settingsForRun.enabledMcpServers),
+        enabledMcpServers: runtimeMcpServerIds,
         allowShell: Boolean(settingsForRun.allowShell),
         maxSubagents,
-        harnessEnabled: Boolean(settingsForRun.harnessEnabled),
+        harnessEnabled: false,
         lastGeneratedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         error: warnings.join(" ")
@@ -1704,7 +2047,12 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     const skillTemplates = {};
 
     const root = this.skillRoot(safeSettings);
-    const skillIds = new Set([...Object.keys(PRESET_SKILLS), ...discoverSkillIds(root)]);
+    if (safeSettings.skillsEnabled !== false) {
+      this.writePresetSkills(safeSettings);
+    }
+    const bundledChildren = bundledChildSkillIds();
+    const customSkillIds = discoverSkillIds(root).filter((id) => !bundledChildren.has(id));
+    const skillIds = new Set([...Object.keys(PRESET_SKILLS), ...customSkillIds]);
 
     for (const id of skillIds) {
       const template = this.readSkillTemplate(safeSettings, id);
@@ -1822,10 +2170,29 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     for (const id of selected) {
       const preset = PRESET_SKILLS[id];
       if (!preset) continue;
+      if (preset.bundleDir) {
+        const sourceRoot = resolveBundledResourcePath(path.resolve(__dirname, preset.bundleDir));
+        for (const skillId of discoverSkillIds(sourceRoot)) {
+          copyBundledSkillDirectory(path.join(sourceRoot, skillId), path.join(root, skillId));
+        }
+        continue;
+      }
+      if (preset.sourceDir) {
+        removeLegacyBundledSkillSplits(root, preset);
+        removeLegacyPresetDirs(root, preset);
+        const targetDir = path.join(root, preset.dir);
+        if (shouldInstallBundledPreset(targetDir, preset)) {
+          fs.rmSync(targetDir, { recursive: true, force: true });
+          copyBundledSkillDirectory(resolveBundledResourcePath(path.resolve(__dirname, preset.sourceDir)), targetDir);
+        }
+        continue;
+      }
       const skillDir = path.join(root, preset.dir);
       const filePath = path.join(skillDir, "SKILL.md");
       fs.mkdirSync(skillDir, { recursive: true });
-      if (!fs.existsSync(filePath)) {
+      const shouldWrite = !fs.existsSync(filePath)
+        || (Array.isArray(preset.legacyContent) && preset.legacyContent.includes(fs.readFileSync(filePath, "utf8")));
+      if (shouldWrite) {
         fs.writeFileSync(filePath, preset.content);
       }
       copyPresetSupportFiles(skillDir, preset);
@@ -1834,17 +2201,78 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     return root;
   }
 
-  buildPresetMcpConfig(settings, workspacePath) {
+  mcpPresetEnv(preset) {
+    const env = { ...preset.env() };
+    for (const key of Object.keys(env)) {
+      if (!String(env[key] || "").trim()) {
+        env[key] = this.readMcpEnvSecret(key);
+      }
+    }
+    return env;
+  }
+
+  mcpPresetArgs(id, preset, workspacePath, env) {
+    if (id === "mcp-remote" && env.MCP_REMOTE_URL) {
+      return ["-y", "mcp-remote", env.MCP_REMOTE_URL];
+    }
+    if (id === "postgres" && env.POSTGRES_CONNECTION_STRING) {
+      return ["-y", "@modelcontextprotocol/server-postgres", env.POSTGRES_CONNECTION_STRING];
+    }
+    return typeof preset.args === "function" ? preset.args(workspacePath) : preset.args;
+  }
+
+  mcpPresetEntry(id, workspacePath) {
+    const preset = MCP_PRESETS[id];
+    if (!preset) return null;
+    const env = this.mcpPresetEnv(preset);
+    const args = this.mcpPresetArgs(id, preset, workspacePath, env);
+    return {
+      id,
+      command: preset.command,
+      args: normalizeMcpArgs(args),
+      env,
+      url: ""
+    };
+  }
+
+  runtimeMcpServerIds(settings, workspacePath) {
+    if (!settings.mcpEnabled || settings.mcpConfigPath) {
+      return [];
+    }
+    return enabledList(settings.enabledMcpServers).filter((id) => {
+      const entry = this.mcpPresetEntry(id, workspacePath);
+      return entry && mcpServerDiagnostic(entry).injectable;
+    });
+  }
+
+  runtimeMcpReady(settings, workspacePath) {
+    if (!settings.mcpEnabled) return false;
+    if (settings.mcpConfigPath) {
+      try {
+        return this.readMcpServerEntries(settings, workspacePath)
+          .entries
+          .some((entry) => mcpServerDiagnostic(entry).injectable);
+      } catch {
+        return false;
+      }
+    }
+    return this.runtimeMcpServerIds(settings, workspacePath).length > 0;
+  }
+
+  buildPresetMcpConfig(settings, workspacePath, options = {}) {
     const selected = enabledList(settings.enabledMcpServers);
     const servers = {};
 
     for (const id of selected) {
-      const preset = MCP_PRESETS[id];
-      if (!preset) continue;
+      const entry = this.mcpPresetEntry(id, workspacePath);
+      if (!entry) continue;
+      if (options.runtimeOnly && !mcpServerDiagnostic(entry).injectable) {
+        continue;
+      }
       servers[id] = {
-        command: preset.command,
-        args: typeof preset.args === "function" ? preset.args(workspacePath) : preset.args,
-        env: preset.env(),
+        command: entry.command,
+        args: entry.args,
+        env: entry.env,
         url: null,
         connect_timeout: null,
         execute_timeout: null,
@@ -1873,7 +2301,37 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     }
 
     if (settings.mcpConfigPath) {
-      return settings.mcpConfigPath;
+      const source = this.readMcpServerEntries(settings, workspacePath);
+      const entries = source.entries.filter((entry) => mcpServerDiagnostic(entry).injectable);
+      if (entries.length === 0) {
+        return "";
+      }
+      const filePath = this.userDataPath("mcp.runtime.json");
+      const servers = Object.fromEntries(entries.map((entry) => [
+        entry.id,
+        {
+          command: entry.command,
+          args: entry.args,
+          env: entry.env,
+          url: entry.url || null,
+          disabled: false,
+          enabled: true,
+          required: false,
+          enabled_tools: [],
+          disabled_tools: []
+        }
+      ]));
+      const config = {
+        timeouts: {
+          connect_timeout: 10,
+          execute_timeout: 60,
+          read_timeout: 120
+        },
+        servers
+      };
+      fs.mkdirSync(this.app.getPath("userData"), { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(config, null, 2));
+      return filePath;
     }
 
     const selected = enabledList(settings.enabledMcpServers);
@@ -1881,10 +2339,13 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       return "";
     }
 
-    const config = this.buildPresetMcpConfig(settings, workspacePath);
+    const configForRuntime = this.buildPresetMcpConfig(settings, workspacePath, { runtimeOnly: true });
+    if (Object.keys(configForRuntime.servers).length === 0) {
+      return "";
+    }
     const filePath = this.userDataPath("mcp.presets.json");
     fs.mkdirSync(this.app.getPath("userData"), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(config, null, 2));
+    fs.writeFileSync(filePath, JSON.stringify(configForRuntime, null, 2));
     return filePath;
   }
 
@@ -1892,8 +2353,8 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     const filePath = path.join(this.app.getPath("userData"), DESKTOP_MANAGED_CONFIG_FILE);
     const content = [
       "# Generated by DeepSeek TUI Desktop.",
-      "# Controls DeepSeek thinking output for the process stream toggle.",
-      `reasoning_effort = "${processStreamReasoningEffort(settings)}"`,
+      "# Controls DeepSeek thinking output for the desktop process stream.",
+      `reasoning_effort = "${desktopProcessReasoningEffort(settings)}"`,
       ""
     ].join(os.EOL);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -1930,16 +2391,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       configPath: "",
       entries: selected
         .map((id) => {
-          const preset = MCP_PRESETS[id];
-          if (!preset) return null;
-          const args = typeof preset.args === "function" ? preset.args(workspacePath) : preset.args;
-          return {
-            id,
-            command: preset.command,
-            args: normalizeMcpArgs(args),
-            env: preset.env(),
-            url: ""
-          };
+          return this.mcpPresetEntry(id, workspacePath);
         })
         .filter(Boolean)
     };
@@ -1961,28 +2413,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       };
     }
 
-    const servers = source.entries.map((entry) => {
-      const hasUrl = Boolean(String(entry.url || "").trim());
-      const urlValid = validMcpServerUrl(entry.url);
-      const commandFound = hasUrl ? true : commandExists(entry.command);
-      const missingEnv = missingEnvKeys(entry.env);
-      const warnings = [
-        ...mcpConfigWarnings(entry.id, entry.args, entry.env),
-        ...(hasUrl && !urlValid ? ["Server URL must start with http:// or https://."] : []),
-        ...(!hasUrl && commandFound ? [] : hasUrl ? [] : ["Command is not available in PATH."]),
-        ...(missingEnv.length > 0 ? [`Missing environment variables: ${missingEnv.join(", ")}`] : [])
-      ];
-      return {
-        id: entry.id,
-        command: entry.command,
-        args: entry.args,
-        url: entry.url,
-        ok: commandFound && urlValid && missingEnv.length === 0 && warnings.length === 0,
-        commandFound,
-        missingEnv,
-        warnings
-      };
-    });
+    const servers = source.entries.map((entry) => mcpServerDiagnostic(entry));
 
     return {
       ok: servers.every((server) => server.ok),
@@ -2044,6 +2475,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
         staged: 0,
         unstaged: 0,
         untracked: 0,
+        branches: [],
         remotes: [],
         originUrl: "",
         lastCommit: null,
@@ -2066,6 +2498,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
         staged: 0,
         unstaged: 0,
         untracked: 0,
+        branches: [],
         remotes: [],
         originUrl: "",
         lastCommit: null,
@@ -2083,6 +2516,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       : { ahead: 0, behind: 0 };
     const statusResult = runGit(["status", "--porcelain=v1", "-uall"], repoRoot, 10000);
     const changes = parseGitChanges(statusResult.stdout);
+    const branches = listGitBranches(repoRoot, branch);
     const remotes = parseGitRemotes(runGit(["remote", "-v"], repoRoot, 5000).stdout);
     const origin = remotes.find((remote) => remote.name === "origin");
     const lastCommitResult = runGit(["log", "-1", "--pretty=format:%h%x1f%s%x1f%an%x1f%cr"], repoRoot, 5000);
@@ -2101,6 +2535,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       staged: changes.filter((change) => change.staged).length,
       unstaged: changes.filter((change) => change.unstaged).length,
       untracked: changes.filter((change) => change.untracked).length,
+      branches,
       remotes,
       originUrl: origin?.pushUrl || origin?.fetchUrl || "",
       lastCommit: lastCommitParts.length >= 4
@@ -2170,6 +2605,56 @@ process.exit(typeof result.status === "number" ? result.status : 1);
 
     return {
       ok: true,
+      output: trimOutput([result.stdout, result.stderr].filter(Boolean).join("\n")),
+      status: this.gitStatus(workspacePath)
+    };
+  }
+
+  gitSwitchBranch(payload = {}) {
+    const workspacePath = normalizeWorkspace(payload.workspacePath);
+    const branchName = String(payload.branchName || "").trim();
+    const status = this.gitStatus(workspacePath);
+    if (!status.isRepo) {
+      return { ok: false, error: "Workspace is not a Git repository.", status };
+    }
+    if (!branchName) {
+      return { ok: false, error: "Choose a branch before switching.", status };
+    }
+    if (status.hasChanges) {
+      return { ok: false, error: "Commit or stash local changes before switching branches.", status };
+    }
+
+    const target = status.branches.find((branch) => branch.name === branchName);
+    if (!target) {
+      return { ok: false, error: `Branch not found: ${branchName}`, status };
+    }
+    if (target.current) {
+      return { ok: true, output: `Already on ${target.name}.`, status };
+    }
+
+    const localBranches = new Set(status.branches.filter((branch) => branch.type === "local").map((branch) => branch.name));
+    const runSwitch = (args) => {
+      const result = runGit(["switch", ...args], status.repoRoot, 120000);
+      if (result.status === 0) return result;
+      return runGit(["checkout", ...args], status.repoRoot, 120000);
+    };
+
+    let result;
+    if (target.type === "local") {
+      result = runSwitch([target.name]);
+    } else {
+      const localName = target.name.replace(/^[^/]+\//, "");
+      if (!localName || localName === "HEAD") {
+        return { ok: false, error: `Unsupported remote branch: ${target.name}`, status };
+      }
+      result = localBranches.has(localName)
+        ? runSwitch([localName])
+        : runSwitch(["--track", target.name]);
+    }
+
+    return {
+      ok: result.status === 0,
+      error: result.status === 0 ? "" : gitResultError(result, "Unable to switch branches."),
       output: trimOutput([result.stdout, result.stderr].filter(Boolean).join("\n")),
       status: this.gitStatus(workspacePath)
     };
@@ -2287,11 +2772,16 @@ process.exit(typeof result.status === "number" ? result.status : 1);
   }
 
   buildLaunchPlan(options) {
-    const settings = normalizeSettings({ ...this.readSettings(), ...options });
+    const rawSettings = { ...this.readSettings(), ...options };
+    const settings = normalizeSettings(rawSettings);
+    settings.enabledSkills = enabledList(settings.enabledSkills).filter((id) => id !== "harness-probe-rollback");
+    settings.harnessEnabled = false;
     const workspacePath = normalizeWorkspace(settings.workspacePath);
+    const runtimeMcpServerIds = this.runtimeMcpServerIds(settings, workspacePath);
+    const launchSettings = { ...settings, runtimeMcpServerIds, runtimeMcpReady: this.runtimeMcpReady(settings, workspacePath) };
     const runtime = this.resolveRuntime(settings);
-    const args = this.buildArgs({ ...settings, workspacePath });
-    const env = this.buildEnv(settings, workspacePath);
+    const args = this.buildArgs({ ...launchSettings, workspacePath });
+    const env = this.buildEnv(launchSettings, workspacePath);
     const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
     return {
@@ -2321,7 +2811,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       case "sessions":
         return ["sessions", "--limit", "50"];
       case "exec":
-        return ["exec", ...mcpArgs, "--auto", options.agentPrompt || ""].filter(Boolean);
+        return ["exec", ...mcpArgs, "--auto", String(options.agentPrompt || "").trim()].filter(Boolean);
       case "plan":
         return ["exec", ...mcpArgs, "--auto", [
           "You are in Plan mode. Produce a concrete implementation plan only.",
@@ -2329,9 +2819,9 @@ process.exit(typeof result.status === "number" ? result.status : 1);
           "Focus on steps, risks, required tools, and verification.",
           "",
           options.agentPrompt || ""
-        ].join("\n")].filter(Boolean);
+        ].join("\n").trim()].filter(Boolean);
       case "yolo":
-        return ["run", ...mcpArgs, "--workspace", options.workspacePath, "--yolo", "-p", options.agentPrompt || ""].filter(Boolean);
+        return ["run", ...mcpArgs, "--workspace", options.workspacePath, "--yolo", "-p", String(options.agentPrompt || "").trim()].filter(Boolean);
       case "tui":
       default:
         return ["run", ...mcpArgs, "--workspace", options.workspacePath];
@@ -2344,10 +2834,6 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       TERM: "xterm-256color",
       COLORTERM: "truecolor"
     };
-
-    if (options.harnessEnabled) {
-      env.DEEPSEEK_DESKTOP_HARNESS = "1";
-    }
 
     const effectiveApiKey = trimSecret(options.apiKey) || this.readApiKey(options.provider);
     if (effectiveApiKey) {
@@ -2376,10 +2862,13 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       env.DEEPSEEK_SKILLS_DIR = skillsDir;
     }
     if (options.skillsEnabled !== false && options.enabledSkills) {
-      env.DEEPSEEK_DESKTOP_ENABLED_SKILLS = enabledList(options.enabledSkills).join(",");
+      env.DEEPSEEK_DESKTOP_ENABLED_SKILLS = runtimeSkillIdsForSelection(options.enabledSkills).join(",");
     }
-    if (options.mcpEnabled && options.enabledMcpServers) {
-      env.DEEPSEEK_DESKTOP_ENABLED_MCP = enabledList(options.enabledMcpServers).join(",");
+    const runtimeMcpServerIds = Array.isArray(options.runtimeMcpServerIds)
+      ? enabledList(options.runtimeMcpServerIds)
+      : this.runtimeMcpServerIds(options, workspacePath);
+    if (options.mcpEnabled && runtimeMcpServerIds.length > 0) {
+      env.DEEPSEEK_DESKTOP_ENABLED_MCP = runtimeMcpServerIds.join(",");
     }
     if (typeof options.allowShell === "boolean") {
       env.DEEPSEEK_ALLOW_SHELL = options.allowShell ? "1" : "0";
@@ -2441,10 +2930,6 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       pid: this.terminalProcess.pid
     });
 
-    if (plan.env.DEEPSEEK_DESKTOP_HARNESS === "1") {
-      this.handleTerminalData(`\r\n[harness ${plan.sessionId}] ${plan.command} ${plan.args.join(" ")}\r\n\r\n`);
-    }
-
     this.terminalProcess.onData((data) => this.handleTerminalData(data));
     this.terminalProcess.onExit((exit) => {
       const session = this.activeSession;
@@ -2505,5 +2990,6 @@ process.exit(typeof result.status === "number" ? result.status : 1);
 
 module.exports = {
   DeepSeekDesktopHarness,
+  copyBundledSkillDirectory,
   defaultSettings
 };

@@ -87,10 +87,10 @@ DEEPSEEK_TUI_WIN_CERT_PASSWORD="your-local-password" npm run dist:win:test
 - Quick actions for TUI, resume, doctor, setup, MCP init, one-shot Agent/Plan prompts, and upstream YOLO launch.
 - Environment wiring for `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_PROVIDER`, `DEEPSEEK_MCP_CONFIG`, `DEEPSEEK_SKILLS_DIR`, `DEEPSEEK_ALLOW_SHELL`, and `DEEPSEEK_MAX_SUBAGENTS`.
 - DeepSeek V4 Pro / V4 Flash presets default to `https://api.deepseek.com`, so users only need to paste their API key for the common DeepSeek setup. NVIDIA NIM mode defaults to `https://integrate.api.nvidia.com/v1`.
-- Skills drawer: preset Skills remain available, and users can create new `SKILL.md` workflows or import external Skill directories such as a full Superpowers skill pack.
+- Skills drawer: preset Skills remain available, with the bundled Superpowers pack imported from `obra/superpowers` and UI/UX Pro Max imported with its `scripts/` and `data/` support files. Users can also create new `SKILL.md` workflows or import external Skill directories.
 - Scheduled Tasks screen: create a simple daily Agent task with only the prompt, workspace, run time, and enable toggle exposed. The desktop app maintains the local runner and logs while keeping API keys in its local secret store instead of writing secrets into schedule files.
 - Preset MCP servers: Playwright, Context7, Filesystem, MCP Remote, GitHub, Postgres, Sequential Thinking, Memory, Slack, Notion, Sentry, Figma Developer, Stripe, Puppeteer, Brave Search, Google Maps, and Panel / 1Panel. Enabled presets are written to an MCP JSON file under Electron `userData` and injected by the harness.
-- MCP tool page includes startup instructions, command preview, auth/env hints, category filters, weekly npm download badges, safety labels, and an add-only custom MCP form. MCP service secrets are read from environment variables; DeepSeek/NVIDIA API keys are stored in the desktop app's local secret store for launches and scheduled tasks.
+- MCP tool page includes startup instructions, guided setup cards, token/OAuth/login links, inline credential forms, command preview, auth/env hints, category filters, weekly npm download badges, safety labels, and an add-only custom MCP form. MCP service secrets are read from environment variables or the desktop app's local secret store; DeepSeek/NVIDIA API keys use the same local secret store for launches and scheduled tasks.
 - Optional token-protected mobile bridge for viewing desktop task progress from a phone app, subscribing to live events, and remotely controlling the running desktop session.
 - Optional update push notification endpoint that can be called by an updater service or release workflow to notify the desktop UI and connected mobile clients.
 
@@ -116,7 +116,7 @@ Desktop admin calls use `Authorization: Bearer <bridge-token>` or `x-deepseek-br
 ## Roadmap
 
 1. Store API credentials in macOS Keychain / Windows Credential Manager instead of session-only env fields.
-2. Add per-MCP credential forms and connection tests for token-based presets.
+2. Add deeper per-MCP connection tests beyond launch-time preflight for token-based presets.
 3. Optionally reconcile local desktop history with upstream `deepseek sessions --json` if upstream exposes stable structured output.
 4. Replace local Windows test signing with a real trusted certificate before public release.
 5. Add a cloud relay / APNs-FCM layer for phone access outside the same LAN.

@@ -69,3 +69,57 @@ test("runtime state accepts structured runtime API events ahead of stable app-se
   assert.equal(snapshot.counts.running, 1);
   assert.equal(snapshot.counts.failed, 1);
 });
+
+test("runtime state parses common Superpowers and DeepSeek TUI child-agent terminal formats", () => {
+  const runtimeState = new DeepSeekRuntimeState();
+  runtimeState.startRun({ sessionId: "session-4", mode: "agent", workspacePath: "/tmp/workspace" });
+
+  runtimeState.ingestTerminalData([
+    "Sub-agents:",
+    "- explorer: Running - Reading source files",
+    "* worker [Completed] Added focused tests",
+    "Agent reviewer Failed: Missing token",
+    "sub-agent planner queued waiting for scope"
+  ].join("\n"));
+
+  const snapshot = runtimeState.snapshot();
+  assert.deepEqual(
+    snapshot.agents.map((agent) => [agent.id, agent.status, agent.summary]),
+    [
+      ["explorer", "running", "Reading source files"],
+      ["worker", "completed", "Added focused tests"],
+      ["reviewer", "failed", "Missing token"],
+      ["planner", "queued", "waiting for scope"]
+    ]
+  );
+});
+
+test("runtime state stops counting active sub-agents after the parent run exits", () => {
+  const runtimeState = new DeepSeekRuntimeState();
+  runtimeState.startRun({ sessionId: "session-3", mode: "agent", workspacePath: "/tmp/workspace" });
+
+  runtimeState.ingestRuntimeEvent({
+    event: "runtime_snapshot",
+    agents: [
+      { id: "explorer", name: "Explorer", status: "running", summary: "Reading files" },
+      { id: "worker", name: "Worker", status: "queued", summary: "Waiting for scope" },
+      { id: "reviewer", name: "Reviewer", status: "completed", summary: "Checked output" }
+    ]
+  });
+
+  runtimeState.finishRun({ exitCode: 1 });
+
+  const snapshot = runtimeState.snapshot();
+  assert.equal(snapshot.status, "failed");
+  assert.equal(snapshot.counts.running, 0);
+  assert.equal(snapshot.counts.failed, 0);
+  assert.equal(snapshot.counts.cancelled, 2);
+  assert.deepEqual(
+    snapshot.agents.map((agent) => [agent.id, agent.status]),
+    [
+      ["explorer", "cancelled"],
+      ["worker", "cancelled"],
+      ["reviewer", "completed"]
+    ]
+  );
+});

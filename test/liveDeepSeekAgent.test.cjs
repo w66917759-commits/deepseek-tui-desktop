@@ -248,7 +248,6 @@ test("live DeepSeek desktop chat can create a daily task, switch branch, commit,
     enabledMcpServers: [],
     allowShell: true,
     maxSubagents: 1,
-    harnessEnabled: true,
     launchAction: "exec"
   });
   harness.saveApiKey({ provider: "deepseek", apiKey });
@@ -277,12 +276,17 @@ test("live DeepSeek desktop chat can create a daily task, switch branch, commit,
 
   assert.equal(plan.args[0], "exec");
   assert.ok(plan.args.includes("--auto"));
-  assert.ok(plan.args.includes(agentPrompt));
+  const promptArg = plan.args.at(-1);
+  assert.equal(typeof promptArg, "string");
+  assert.doesNotMatch(promptArg, /DeepSeek TUI Desktop Harness mode/);
+  assert.ok(promptArg.includes(agentPrompt));
   assert.equal(plan.cwd, workspacePath);
   assert.ok(plan.env.DEEPSEEK_API_KEY, "launch plan should inject the saved DeepSeek API key");
   assert.equal(plan.env.DEEPSEEK_ALLOW_SHELL, "1");
-  assert.equal(plan.env.DEEPSEEK_DESKTOP_HARNESS, "1");
-  assert.equal(plan.env.DEEPSEEK_DESKTOP_ENABLED_SKILLS, "superpowers,ui-ux-design,cron-scheduler,skill-downloader");
+  assert.equal(Object.hasOwn(plan.env, "DEEPSEEK_DESKTOP_HARNESS"), false);
+  assert.match(plan.env.DEEPSEEK_DESKTOP_ENABLED_SKILLS, /(^|,)superpowers(,|$)/);
+  assert.doesNotMatch(plan.env.DEEPSEEK_DESKTOP_ENABLED_SKILLS, /using-superpowers/);
+  assert.match(plan.env.DEEPSEEK_DESKTOP_ENABLED_SKILLS, /ui-ux-pro-max/);
   assert.ok(fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "cron-scheduler", "scripts", "write-cron-file.mjs")));
   assert.ok(fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "skill-downloader", "SKILL.md")));
 

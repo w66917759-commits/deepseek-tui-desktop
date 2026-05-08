@@ -5,9 +5,11 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { DeepSeekDesktopHarness, defaultSettings } = require("../electron/harness.cjs");
+const { DeepSeekDesktopHarness, copyBundledSkillDirectory, defaultSettings } = require("../electron/harness.cjs");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
+const DEFAULT_SELECTED_SKILLS = ["superpowers", "ui-ux-pro-max", "cron-scheduler", "skill-downloader"];
+const DEFAULT_RUNTIME_SKILLS = DEFAULT_SELECTED_SKILLS;
 
 function makeTempRoot(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
@@ -63,6 +65,15 @@ function createHarnessContext() {
   };
 }
 
+function runGit(args, cwd) {
+  return spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: process.env,
+    timeout: 10000
+  });
+}
+
 test("settings persistence sanitizes unsafe fields and fills runtime defaults", (t) => {
   const ctx = createHarnessContext();
   t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
@@ -86,7 +97,7 @@ test("settings persistence sanitizes unsafe fields and fills runtime defaults", 
   assert.equal(settings.mobileBridgeHost, "0.0.0.0");
   assert.equal(settings.mobileBridgePort, 8765);
   assert.equal(settings.mobileBridgeToken.length >= 20, true);
-  assert.deepEqual(settings.enabledSkills, ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"]);
+  assert.deepEqual(settings.enabledSkills, DEFAULT_SELECTED_SKILLS);
   assert.equal(settings.mcpEnabled, true);
   assert.equal(Object.hasOwn(settings, "apiKey"), false);
   assert.equal(Object.hasOwn(settings, "agentPrompt"), false);
@@ -94,6 +105,24 @@ test("settings persistence sanitizes unsafe fields and fills runtime defaults", 
   const rawSettings = fs.readFileSync(path.join(ctx.userData, "settings.json"), "utf8");
   assert.equal(rawSettings.includes("sk-should-not-be-stored-here"), false);
   assert.equal(rawSettings.includes("hidden prompt"), false);
+});
+
+test("bundled skill copy resolves app.asar paths to unpacked resources", (t) => {
+  const root = makeTempRoot("dstui-asar-skill");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const asarSkillPath = path.join(root, "Resources", "app.asar", "electron", "skills", "sample-skill");
+  const unpackedSkillPath = path.join(root, "Resources", "app.asar.unpacked", "electron", "skills", "sample-skill");
+  const targetSkillPath = path.join(root, "userData", "skills", "sample-skill");
+  fs.mkdirSync(path.join(unpackedSkillPath, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(unpackedSkillPath, "SKILL.md"), "---\nname: sample-skill\n---\n");
+  fs.writeFileSync(path.join(unpackedSkillPath, "scripts", "helper.js"), "module.exports = true;\n");
+
+  const copied = copyBundledSkillDirectory(asarSkillPath, targetSkillPath);
+
+  assert.equal(copied, true);
+  assert.equal(fs.existsSync(path.join(targetSkillPath, "SKILL.md")), true);
+  assert.equal(fs.existsSync(path.join(targetSkillPath, "scripts", "helper.js")), true);
 });
 
 test("settings default and legacy sub-agent limits migrate to DeepSeek default", (t) => {
@@ -127,6 +156,49 @@ test("settings default and legacy sub-agent limits migrate to DeepSeek default",
   assert.equal(legacyPlan.env.DEEPSEEK_MAX_SUBAGENTS, "10");
 });
 
+test("legacy UI UX preset migrates to the full UI/UX Pro Max skill", (t) => {
+  const ctx = createHarnessContext();
+  t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
+
+  const settings = ctx.harness.writeSettings({
+    ...defaultSettings(),
+    skillPresetVersion: 3,
+    enabledSkills: ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"]
+  });
+
+  assert.deepEqual(settings.enabledSkills, DEFAULT_SELECTED_SKILLS);
+});
+
+test("Superpowers remains a single pack while bundling all upstream skills", (t) => {
+  const ctx = createHarnessContext();
+  t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
+
+  const settings = ctx.harness.writeSettings({
+    ...defaultSettings(),
+    workspacePath: ctx.workspace,
+    enabledSkills: ["superpowers"]
+  });
+  const root = ctx.harness.skillRoot(settings);
+  const legacySplit = path.join(root, "using-superpowers");
+  fs.mkdirSync(root, { recursive: true });
+  fs.cpSync(path.join(PROJECT_ROOT, "electron", "skills", "superpowers", "using-superpowers"), legacySplit, { recursive: true });
+
+  const plan = ctx.harness.buildLaunchPlan({
+    ...settings,
+    workspacePath: ctx.workspace,
+    launchAction: "exec",
+    agentPrompt: "Use Superpowers."
+  });
+  const customization = ctx.harness.readCustomization(settings);
+
+  assert.equal(plan.env.DEEPSEEK_DESKTOP_ENABLED_SKILLS, "superpowers");
+  assert.equal(fs.existsSync(path.join(root, "superpowers", "SKILL.md")), true);
+  assert.equal(fs.existsSync(path.join(root, "superpowers", "using-superpowers", "SKILL.md")), true);
+  assert.equal(fs.existsSync(legacySplit), false);
+  assert.ok(customization.skillTemplates.superpowers);
+  assert.equal(customization.skillTemplates["using-superpowers"], undefined);
+});
+
 test("default conversation skills include daily task and Skill download guidance", (t) => {
   const ctx = createHarnessContext();
   t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
@@ -136,7 +208,12 @@ test("default conversation skills include daily task and Skill download guidance
     workspacePath: ctx.workspace,
     binaryMode: "bundled"
   });
-  assert.deepEqual(settings.enabledSkills, ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"]);
+  assert.deepEqual(settings.enabledSkills, DEFAULT_SELECTED_SKILLS);
+  const customization = ctx.harness.readCustomization(settings);
+  assert.equal(customization.skillTemplates["harness-probe-rollback"], undefined);
+  assert.ok(customization.skillTemplates.superpowers, "Superpowers should be exposed as one pack");
+  assert.equal(customization.skillTemplates["using-superpowers"], undefined);
+  assert.ok(customization.skillTemplates["ui-ux-pro-max"], "UI/UX Pro Max should be available as the full imported skill");
 
   const plan = ctx.harness.buildLaunchPlan({
     workspacePath: ctx.workspace,
@@ -144,7 +221,23 @@ test("default conversation skills include daily task and Skill download guidance
     agentPrompt: "Create a daily task and download a Skill."
   });
 
-  assert.equal(plan.env.DEEPSEEK_DESKTOP_ENABLED_SKILLS, "superpowers,ui-ux-design,cron-scheduler,skill-downloader");
+  assert.equal(plan.env.DEEPSEEK_DESKTOP_ENABLED_SKILLS, DEFAULT_RUNTIME_SKILLS.join(","));
+  assert.equal(
+    fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "superpowers", "SKILL.md")),
+    true
+  );
+  assert.equal(
+    fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "superpowers", "using-superpowers", "SKILL.md")),
+    true
+  );
+  assert.equal(
+    fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "ui-ux-pro-max", "scripts", "search.py")),
+    true
+  );
+  assert.equal(
+    fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "ui-ux-pro-max", "data", "styles.csv")),
+    true
+  );
   assert.equal(
     fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "cron-scheduler", "scripts", "write-cron-file.mjs")),
     true
@@ -199,11 +292,103 @@ test("launch plans include MCP, skills, saved credentials, and plan-mode prompt"
     ctx.workspace
   ]);
 
-  assert.equal(fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "superpowers", "SKILL.md")), true);
+  assert.equal(fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "superpowers", "using-superpowers", "SKILL.md")), true);
   assert.equal(
     fs.existsSync(path.join(plan.env.DEEPSEEK_SKILLS_DIR, "cron-scheduler", "scripts", "write-cron-file.mjs")),
     true
   );
+});
+
+test("launch plans inject only MCP presets that pass adapter preflight", (t) => {
+  const ctx = createHarnessContext();
+  t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
+
+  const plan = ctx.harness.buildLaunchPlan({
+    ...defaultSettings(),
+    workspacePath: ctx.workspace,
+    binaryMode: "bundled",
+    launchAction: "exec",
+    agentPrompt: "Use selected MCP safely.",
+    mcpEnabled: true,
+    enabledMcpServers: ["github", "mcp-remote", "filesystem"]
+  });
+
+  assert.deepEqual(plan.args.slice(0, 3), ["exec", "--enable", "mcp"]);
+  assert.equal(plan.env.DEEPSEEK_DESKTOP_ENABLED_MCP, "filesystem");
+
+  const mcpConfig = JSON.parse(fs.readFileSync(plan.env.DEEPSEEK_MCP_CONFIG, "utf8"));
+  assert.deepEqual(Object.keys(mcpConfig.servers), ["filesystem"]);
+
+  const preflight = ctx.harness.testMcpServers({
+    settings: {
+      ...defaultSettings(),
+      workspacePath: ctx.workspace,
+      mcpEnabled: true,
+      enabledMcpServers: ["github", "mcp-remote", "filesystem"]
+    }
+  });
+  const byId = Object.fromEntries(preflight.servers.map((server) => [server.id, server]));
+  assert.equal(byId.filesystem.injectable, true);
+  assert.equal(byId.filesystem.status, "ready");
+  assert.equal(byId.github.injectable, false);
+  assert.equal(byId.github.status, "needs-auth");
+  assert.deepEqual(byId.github.missingEnv, ["GITHUB_PERSONAL_ACCESS_TOKEN"]);
+  assert.equal(byId["mcp-remote"].injectable, false);
+  assert.equal(byId["mcp-remote"].status, "needs-config");
+
+  const blockedPlan = ctx.harness.buildLaunchPlan({
+    ...defaultSettings(),
+    workspacePath: ctx.workspace,
+    binaryMode: "bundled",
+    launchAction: "exec",
+    agentPrompt: "Only unavailable MCP selected.",
+    mcpEnabled: true,
+    enabledMcpServers: ["github", "mcp-remote"]
+  });
+  assert.deepEqual(blockedPlan.args, ["exec", "--auto", "Only unavailable MCP selected."]);
+  assert.equal(Object.hasOwn(blockedPlan.env, "DEEPSEEK_MCP_CONFIG"), false);
+  assert.equal(Object.hasOwn(blockedPlan.env, "DEEPSEEK_DESKTOP_ENABLED_MCP"), false);
+});
+
+test("saved MCP environment secrets make token-based presets injectable", (t) => {
+  const ctx = createHarnessContext();
+  t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
+
+  const saved = ctx.harness.saveMcpEnvSecret({
+    name: "GITHUB_PERSONAL_ACCESS_TOKEN",
+    value: "ghp_test_token"
+  });
+  assert.equal(saved.ok, true);
+  assert.equal(saved.key, "GITHUB_PERSONAL_ACCESS_TOKEN");
+  assert.equal(saved.configured, true);
+  assert.equal(Object.hasOwn(saved, "value"), false);
+
+  const plan = ctx.harness.buildLaunchPlan({
+    ...defaultSettings(),
+    workspacePath: ctx.workspace,
+    binaryMode: "bundled",
+    launchAction: "exec",
+    agentPrompt: "Use GitHub MCP.",
+    mcpEnabled: true,
+    enabledMcpServers: ["github"]
+  });
+
+  assert.deepEqual(plan.args.slice(0, 3), ["exec", "--enable", "mcp"]);
+  assert.equal(plan.env.DEEPSEEK_DESKTOP_ENABLED_MCP, "github");
+
+  const mcpConfig = JSON.parse(fs.readFileSync(plan.env.DEEPSEEK_MCP_CONFIG, "utf8"));
+  assert.equal(mcpConfig.servers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN, "ghp_test_token");
+
+  const preflight = ctx.harness.testMcpServers({
+    settings: {
+      ...defaultSettings(),
+      workspacePath: ctx.workspace,
+      mcpEnabled: true,
+      enabledMcpServers: ["github"]
+    }
+  });
+  assert.equal(preflight.servers[0].status, "ready");
+  assert.equal(preflight.servers[0].injectable, true);
 });
 
 test("DeepSeek V4 1M UI selections resolve to official API model ids", (t) => {
@@ -235,15 +420,18 @@ test("DeepSeek V4 1M UI selections resolve to official API model ids", (t) => {
   assert.equal(proPlan.env.DEEPSEEK_MODEL, "deepseek-v4-pro");
 });
 
-test("desktop harness mode is opt-in for launch plans", (t) => {
+test("legacy harness flag is removed from user-visible Skills and runtime prompt injection", (t) => {
   const ctx = createHarnessContext();
   t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
 
-  ctx.harness.writeSettings({
+  const settings = ctx.harness.writeSettings({
     ...defaultSettings(),
     workspacePath: ctx.workspace,
-    binaryMode: "bundled"
+    binaryMode: "bundled",
+    harnessEnabled: true
   });
+  assert.equal(settings.harnessEnabled, false);
+  assert.equal(settings.enabledSkills.includes("harness-probe-rollback"), false);
 
   const defaultPlan = ctx.harness.buildLaunchPlan({
     workspacePath: ctx.workspace,
@@ -251,51 +439,80 @@ test("desktop harness mode is opt-in for launch plans", (t) => {
     agentPrompt: "List files"
   });
   assert.equal(Object.hasOwn(defaultPlan.env, "DEEPSEEK_DESKTOP_HARNESS"), false);
+  assert.equal(defaultPlan.args.join("\n").includes("DeepSeek TUI Desktop Harness mode"), false);
 
-  const harnessPlan = ctx.harness.buildLaunchPlan({
+  const legacyHarnessPlan = ctx.harness.buildLaunchPlan({
     workspacePath: ctx.workspace,
     launchAction: "exec",
     agentPrompt: "List files",
     harnessEnabled: true
   });
-  assert.equal(harnessPlan.env.DEEPSEEK_DESKTOP_HARNESS, "1");
+  assert.equal(Object.hasOwn(legacyHarnessPlan.env, "DEEPSEEK_DESKTOP_HARNESS"), false);
+  assert.equal(legacyHarnessPlan.args.join("\n").includes("DeepSeek TUI Desktop Harness mode"), false);
+  assert.equal(legacyHarnessPlan.args.at(-1), "List files");
+  assert.equal(legacyHarnessPlan.env.DEEPSEEK_DESKTOP_ENABLED_SKILLS, DEFAULT_RUNTIME_SKILLS.join(","));
+  assert.equal(fs.existsSync(path.join(legacyHarnessPlan.env.DEEPSEEK_SKILLS_DIR, "harness-probe-rollback", "SKILL.md")), false);
+
+  const planHarness = ctx.harness.buildLaunchPlan({
+    workspacePath: ctx.workspace,
+    launchAction: "plan",
+    agentPrompt: "List risks",
+    harnessEnabled: true
+  });
+  assert.equal(Object.hasOwn(planHarness.env, "DEEPSEEK_DESKTOP_HARNESS"), false);
+  assert.equal(planHarness.args.join("\n").includes("DeepSeek TUI Desktop Harness mode"), false);
+  assert.match(planHarness.args.at(-1), /You are in Plan mode/);
+  assert.match(planHarness.args.at(-1), /List risks/);
+
+  const yoloHarness = ctx.harness.buildLaunchPlan({
+    workspacePath: ctx.workspace,
+    launchAction: "yolo",
+    agentPrompt: "Fix it",
+    harnessEnabled: true
+  });
+  assert.equal(Object.hasOwn(yoloHarness.env, "DEEPSEEK_DESKTOP_HARNESS"), false);
+  assert.equal(yoloHarness.args.join("\n").includes("DeepSeek TUI Desktop Harness mode"), false);
+  assert.match(yoloHarness.args.at(-1), /Fix it/);
 });
 
-test("process stream toggle writes DeepSeek reasoning managed config", (t) => {
+test("process stream writes DeepSeek reasoning managed config independently from Harness", (t) => {
   const ctx = createHarnessContext();
   t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
 
-  const offPlan = ctx.harness.buildLaunchPlan({
+  const streamOffPlan = ctx.harness.buildLaunchPlan({
     workspacePath: ctx.workspace,
     launchAction: "exec",
     agentPrompt: "Ping",
+    processStreamEnabled: false,
     harnessEnabled: false
   });
 
   assert.equal(
-    offPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH,
+    streamOffPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH,
     path.join(ctx.userData, "deepseek.desktop.managed.toml")
   );
   assert.match(
-    fs.readFileSync(offPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH, "utf8"),
+    fs.readFileSync(streamOffPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH, "utf8"),
     /reasoning_effort = "off"/
   );
 
-  const streamPlan = ctx.harness.buildLaunchPlan({
+  const streamOnPlan = ctx.harness.buildLaunchPlan({
     workspacePath: ctx.workspace,
     launchAction: "exec",
     agentPrompt: "Ping",
-    harnessEnabled: true
+    processStreamEnabled: true,
+    harnessEnabled: false
   });
 
   assert.equal(
-    streamPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH,
+    streamOnPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH,
     path.join(ctx.userData, "deepseek.desktop.managed.toml")
   );
   assert.match(
-    fs.readFileSync(streamPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH, "utf8"),
+    fs.readFileSync(streamOnPlan.env.DEEPSEEK_MANAGED_CONFIG_PATH, "utf8"),
     /reasoning_effort = "max"/
   );
+  assert.equal(Object.hasOwn(streamOnPlan.env, "DEEPSEEK_DESKTOP_HARNESS"), false);
 });
 
 test("automation cron files keep secrets out and persist runner metadata", (t) => {
@@ -410,6 +627,53 @@ test("git helpers report non-repo state, initialize safely, and validate GitHub 
   const diff = ctx.harness.gitDiffSummary({ workspacePath: ctx.workspace });
   assert.equal(diff.ok, true, diff.error);
   assert.match(diff.output, /README\.md/);
+});
+
+test("git helpers list branches and switch only when the working tree is clean", (t) => {
+  const ctx = createHarnessContext();
+  t.after(() => fs.rmSync(ctx.root, { recursive: true, force: true }));
+
+  const init = ctx.harness.gitInit(ctx.workspace);
+  assert.equal(init.ok, true, init.error || init.output);
+  fs.writeFileSync(path.join(ctx.workspace, "README.md"), "# Branch repo\n");
+  let commit = ctx.harness.gitCommit({
+    workspacePath: ctx.workspace,
+    message: "Initial commit"
+  });
+  assert.equal(commit.ok, true, commit.error || commit.output);
+
+  const feature = runGit(["checkout", "-b", "codex/test-branch"], ctx.workspace);
+  assert.equal(feature.status, 0, feature.stderr || feature.stdout);
+  fs.writeFileSync(path.join(ctx.workspace, "README.md"), "# Branch repo\n\nFeature\n");
+  commit = ctx.harness.gitCommit({
+    workspacePath: ctx.workspace,
+    message: "Feature commit"
+  });
+  assert.equal(commit.ok, true, commit.error || commit.output);
+
+  const dirtySwitch = ctx.harness.gitSwitchBranch({
+    workspacePath: ctx.workspace,
+    branchName: "main"
+  });
+  assert.equal(dirtySwitch.ok, true, dirtySwitch.error || dirtySwitch.output);
+
+  fs.writeFileSync(path.join(ctx.workspace, "dirty.txt"), "dirty\n");
+  const blocked = ctx.harness.gitSwitchBranch({
+    workspacePath: ctx.workspace,
+    branchName: "codex/test-branch"
+  });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /commit or stash/i);
+
+  fs.rmSync(path.join(ctx.workspace, "dirty.txt"));
+  const switched = ctx.harness.gitSwitchBranch({
+    workspacePath: ctx.workspace,
+    branchName: "codex/test-branch"
+  });
+  assert.equal(switched.ok, true, switched.error || switched.output);
+  assert.equal(switched.status.branch, "codex/test-branch");
+  assert.ok(switched.status.branches.some((branch) => branch.name === "main" && branch.type === "local"));
+  assert.ok(switched.status.branches.some((branch) => branch.name === "codex/test-branch" && branch.current));
 });
 
 test("cron scheduler script validates input, quotes env values, and escapes percent characters", (t) => {

@@ -49,7 +49,7 @@ The desktop UI now follows a Codex-like pattern:
 - Main surface: conversation messages, composer, a tool dashboard, and a terminal-backed runtime output panel.
 - Top-level switch: `对话`, `工具`, and `终端`.
 - Skills and MCP do not appear by default. They open as dedicated tool pages when selected.
-- Default Skills are `Superpowers` and `UI/UX 设计`.
+- Default Skills are `Superpowers` and the imported `UI/UX Pro Max` skill.
 - The bottom composer should mirror the upstream `Plan / Agent / YOLO` mode names. Plan one-shot prompts use a non-mutating plan-only prefix, while YOLO uses the upstream `--yolo` launch path.
 
 ## MCP Preset Research

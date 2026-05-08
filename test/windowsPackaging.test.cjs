@@ -34,6 +34,13 @@ test("Windows packaging config targets a local-test x64 NSIS installer", () => {
   assert.equal(pkg.build.nsis.createDesktopShortcut, true);
 });
 
+test("packaging config unpacks bundled skill directories for packaged startup", () => {
+  assert.ok(
+    pkg.build.asarUnpack.includes("electron/skills/**"),
+    "packaged app must copy bundled Skill directories from app.asar.unpacked"
+  );
+});
+
 test("Windows runtime prepare script dry-runs the upstream Windows x64 assets", () => {
   const result = runNodeScript("scripts/prepare-win-runtime.cjs", ["--dry-run", "--json"]);
   assert.equal(result.status, 0, result.stderr || result.stdout);

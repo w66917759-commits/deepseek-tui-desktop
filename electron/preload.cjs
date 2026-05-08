@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("deepseekDesktop", {
   getSettings: () => ipcRenderer.invoke("settings:get"),
+  openExternal: (url) => ipcRenderer.invoke("app:open-external", url),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
   getApiKey: (provider) => ipcRenderer.invoke("api-key:get", provider),
   saveApiKey: (payload) => ipcRenderer.invoke("api-key:save", payload),
@@ -9,6 +10,7 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
   createSkillTemplate: (payload) => ipcRenderer.invoke("skills:create-template", payload),
   importSkillDirectory: (payload) => ipcRenderer.invoke("skills:import-directory", payload),
   saveMcpConfig: (payload) => ipcRenderer.invoke("mcp:save-config", payload),
+  saveMcpEnvSecret: (payload) => ipcRenderer.invoke("mcp:save-env-secret", payload),
   testMcpServers: (payload) => ipcRenderer.invoke("mcp:test", payload),
   getConversationHistory: () => ipcRenderer.invoke("history:get"),
   saveConversationHistory: (history) => ipcRenderer.invoke("history:save", history),
@@ -22,9 +24,13 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
   openWorkspaceEditor: (options) => ipcRenderer.invoke("editor:open", options),
   checkRuntime: (settings) => ipcRenderer.invoke("runtime:check", settings),
   getRuntimeSnapshot: () => ipcRenderer.invoke("runtime:snapshot"),
+  getRuntimeOrchestratorSnapshot: () => ipcRenderer.invoke("runtime:orchestratorSnapshot"),
+  startRuntimeTurn: (payload) => ipcRenderer.invoke("runtime:startTurn", payload),
+  cancelRuntimeTurn: (payload) => ipcRenderer.invoke("runtime:cancelTurn", payload),
   getGitStatus: (workspacePath) => ipcRenderer.invoke("git:status", workspacePath),
   initGitRepository: (workspacePath) => ipcRenderer.invoke("git:init", workspacePath),
   setGitRemote: (payload) => ipcRenderer.invoke("git:set-remote", payload),
+  switchGitBranch: (payload) => ipcRenderer.invoke("git:switch-branch", payload),
   fetchGitRepository: (payload) => ipcRenderer.invoke("git:fetch", payload),
   pullGitRepository: (payload) => ipcRenderer.invoke("git:pull", payload),
   pushGitRepository: (payload) => ipcRenderer.invoke("git:push", payload),
@@ -61,6 +67,16 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
     const listener = (_event, event) => callback(event);
     ipcRenderer.on("runtime:event", listener);
     return () => ipcRenderer.removeListener("runtime:event", listener);
+  },
+  onRuntimeOrchestratorSnapshot: (callback) => {
+    const listener = (_event, snapshot) => callback(snapshot);
+    ipcRenderer.on("runtime:orchestratorSnapshot", listener);
+    return () => ipcRenderer.removeListener("runtime:orchestratorSnapshot", listener);
+  },
+  onRuntimeTurnEvent: (callback) => {
+    const listener = (_event, event) => callback(event);
+    ipcRenderer.on("runtime:turnEvent", listener);
+    return () => ipcRenderer.removeListener("runtime:turnEvent", listener);
   },
   onRemoteStatus: (callback) => {
     const listener = (_event, status) => callback(status);

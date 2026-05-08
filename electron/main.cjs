@@ -1,15 +1,20 @@
-const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { DeepSeekDesktopHarness } = require("./harness.cjs");
 const { DesktopRemoteBridge } = require("./remoteBridge.cjs");
+const { AppServerClient } = require("./appServerClient.cjs");
+const { RuntimeOrchestrator, createDeepSeekCliRunner } = require("./runtimeOrchestrator.cjs");
 
 let mainWindow = null;
 let harness = null;
 let remoteBridge = null;
+let appServerClient = null;
+let orchestrator = null;
 
 const isDev = !app.isPackaged;
+const DEFAULT_RUNTIME_SESSION_CONCURRENCY = 8;
 
 const EDITOR_OPENERS = {
   cursor: {
@@ -139,6 +144,18 @@ function sendRuntimeEvent(event) {
   }
 }
 
+function sendRuntimeOrchestratorSnapshot(snapshot) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("runtime:orchestratorSnapshot", snapshot);
+  }
+}
+
+function sendRuntimeTurnEvent(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("runtime:turnEvent", event);
+  }
+}
+
 function sendRemoteStatus() {
   if (remoteBridge && mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("remote:status", remoteBridge.getStatus(true));
@@ -146,6 +163,12 @@ function sendRemoteStatus() {
   if (remoteBridge) {
     remoteBridge.broadcast("bridge-status", remoteBridge.getStatus(false));
   }
+}
+
+function launchActionForTurnMode(mode) {
+  if (mode === "plan") return "plan";
+  if (mode === "yolo") return "yolo";
+  return "exec";
 }
 
 function createWindow() {
@@ -177,8 +200,99 @@ function createWindow() {
   }
 }
 
+function createOrchestrator() {
+  const settings = harness.readSettings();
+  const workspacePath = settings.workspacePath || app.getPath("userData");
+  const runtime = harness.resolveRuntime(settings);
+  const env = harness.buildEnv(settings, workspacePath);
+  fs.mkdirSync(app.getPath("userData"), { recursive: true });
+
+  appServerClient = new AppServerClient({
+    command: runtime.selected,
+    args: ["app-server", "--stdio"],
+    cwd: app.getPath("userData"),
+    env,
+    requestTimeoutMs: 60_000
+  });
+  appServerClient.on("event", (event) => {
+    sendRuntimeTurnEvent({ ...event, source: "app-server" });
+  });
+  appServerClient.on("stderr", (data) => {
+    sendRuntimeTurnEvent({
+      type: "app-server-stderr",
+      detail: String(data || ""),
+      at: new Date().toISOString()
+    });
+  });
+  appServerClient.on("error", (error) => {
+    sendRuntimeTurnEvent({
+      type: "app-server-error",
+      detail: error instanceof Error ? error.message : String(error || ""),
+      at: new Date().toISOString()
+    });
+  });
+  appServerClient.on("exit", (exit) => {
+    sendRuntimeTurnEvent({
+      type: "app-server-exit",
+      detail: `code=${exit.code ?? "null"}${exit.signal ? ` signal=${exit.signal}` : ""}`,
+      at: new Date().toISOString()
+    });
+  });
+
+  orchestrator = new RuntimeOrchestrator({
+    client: appServerClient,
+    runner: (turn, conversation, emitEvent) => {
+      const latestSettings = harness.readSettings();
+      const requestedSettings = turn.settings && typeof turn.settings === "object" ? turn.settings : {};
+      const launchPlan = harness.buildLaunchPlan({
+        ...latestSettings,
+        ...requestedSettings,
+        provider: turn.provider || requestedSettings.provider || latestSettings.provider,
+        model: turn.model || requestedSettings.model || latestSettings.model,
+        baseUrl: turn.baseUrl || requestedSettings.baseUrl || latestSettings.baseUrl,
+        workspacePath: conversation.workspacePath || workspacePath,
+        launchAction: launchActionForTurnMode(turn.mode),
+        agentPrompt: turn.prompt
+      });
+      return createDeepSeekCliRunner({
+        command: launchPlan.command,
+        args: launchPlan.args,
+        cwd: launchPlan.cwd,
+        env: launchPlan.env
+      })(turn, conversation, emitEvent);
+    },
+    maxConcurrentSessions: DEFAULT_RUNTIME_SESSION_CONCURRENCY
+  });
+  orchestrator.on("runtime:snapshot", sendRuntimeOrchestratorSnapshot);
+  orchestrator.on("runtime:event", sendRuntimeTurnEvent);
+  for (const type of ["turn-started", "turn-completed", "turn-failed", "turn-cancelled"]) {
+    orchestrator.on(type, (turn) => {
+      sendRuntimeTurnEvent({ ...turn, type, at: new Date().toISOString() });
+    });
+  }
+  return orchestrator;
+}
+
+function getOrchestrator() {
+  return orchestrator || createOrchestrator();
+}
+
 function registerIpc() {
   ipcMain.handle("settings:get", () => harness.readSettings());
+
+  ipcMain.handle("app:open-external", async (_event, url) => {
+    const value = String(url || "").trim();
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        return { ok: false, error: "Only http and https URLs can be opened." };
+      }
+      await shell.openExternal(parsed.toString());
+      return { ok: true, url: parsed.toString() };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "Invalid URL" };
+    }
+  });
 
   ipcMain.handle("settings:save", (_event, settings) => {
     const saved = harness.writeSettings(settings);
@@ -198,6 +312,8 @@ function registerIpc() {
   ipcMain.handle("skills:import-directory", (_event, payload) => harness.importSkillDirectory(payload));
 
   ipcMain.handle("mcp:save-config", (_event, payload) => harness.saveMcpConfig(payload));
+
+  ipcMain.handle("mcp:save-env-secret", (_event, payload) => harness.saveMcpEnvSecret(payload));
 
   ipcMain.handle("mcp:test", (_event, payload) => harness.testMcpServers(payload));
 
@@ -236,11 +352,26 @@ function registerIpc() {
 
   ipcMain.handle("runtime:snapshot", () => harness.getRuntimeSnapshot());
 
+  ipcMain.handle("runtime:orchestratorSnapshot", () => getOrchestrator().snapshot());
+
+  ipcMain.handle("runtime:startTurn", (_event, payload = {}) => {
+    const runtime = harness.checkRuntime(payload.settings || harness.readSettings());
+    if (!runtime.selectedExists) {
+      return { ok: false, error: "Runtime not found", runtime };
+    }
+    const orchestrator = getOrchestrator();
+    return orchestrator.startTurn(payload);
+  });
+
+  ipcMain.handle("runtime:cancelTurn", (_event, payload = {}) => getOrchestrator().cancelTurn(payload));
+
   ipcMain.handle("git:status", (_event, workspacePath) => harness.gitStatus(workspacePath));
 
   ipcMain.handle("git:init", (_event, workspacePath) => harness.gitInit(workspacePath));
 
   ipcMain.handle("git:set-remote", (_event, payload) => harness.gitSetRemote(payload));
+
+  ipcMain.handle("git:switch-branch", (_event, payload) => harness.gitSwitchBranch(payload));
 
   ipcMain.handle("git:fetch", (_event, payload) => harness.gitRunWorkspaceAction(payload, "fetch"));
 
@@ -317,6 +448,7 @@ function registerIpc() {
 app.whenReady().then(() => {
   harness = new DeepSeekDesktopHarness(app);
   remoteBridge = new DesktopRemoteBridge(app, harness);
+  createOrchestrator();
 
   harness.on("terminal:data", (data) => {
     sendTerminalData(data);
@@ -351,6 +483,9 @@ app.on("window-all-closed", () => {
   }
   if (harness) {
     harness.shutdown();
+  }
+  if (appServerClient) {
+    appServerClient.close().catch(() => undefined);
   }
   if (process.platform !== "darwin") {
     app.quit();

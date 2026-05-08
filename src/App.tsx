@@ -10,12 +10,15 @@ import {
   CalendarClock,
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   CircleAlert,
   Code2,
   Copy,
   Database,
   DownloadCloud,
+  Droplets,
   FileCog,
+  Fish,
   FolderOpen,
   Github,
   GitBranch,
@@ -25,6 +28,7 @@ import {
   KeyRound,
   Layers3,
   Link2,
+  LoaderCircle,
   LogOut,
   MessageSquare,
   Palette,
@@ -43,16 +47,17 @@ import {
   Trash2,
   UploadCloud,
   UserRound,
+  Waves,
   X,
   Zap
 } from "lucide-react";
 import { getDesktopBridge } from "./desktopApi";
 import { shouldSubmitComposerShortcut } from "./composerKeys";
 
-type InspectorPanel = "skills" | "mcp" | "remote" | "git" | "settings" | null;
-type MainView = "chat" | "tools" | "tasks" | "agents" | "terminal";
+type InspectorPanel = "skills" | "remote" | "git" | "settings" | null;
+type MainView = "chat" | "tools" | "tasks" | "terminal";
 type ToolPage = "overview" | "skills" | "mcp";
-type AgentMode = "plan" | "agent" | "yolo";
+type PermissionMode = "plan" | "agent" | "yolo";
 type StatusState =
   | { type: "ready" }
   | { type: "launching" }
@@ -122,11 +127,35 @@ interface McpPreset {
   safety: "Low" | "Medium" | "High";
 }
 
+interface McpAdapterRow {
+  id: string;
+  name: string;
+  description: string;
+  envKey: string;
+  envKeys: string[];
+  guideUrl: string;
+  guideLabel: string;
+  guideActionLabel: string;
+  auth: McpPreset["auth"];
+  status: McpAdapterStatus | "untested";
+  statusText: string;
+  hint: string;
+  injectable: boolean;
+  warnings: string[];
+  command: string;
+}
+
+interface McpSecretTarget {
+  presetId: string;
+  key: string;
+}
+
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
 const DEEPSEEK_V4_RELEASE_DOC_URL = "https://api-docs.deepseek.com/news/news260424";
 const DEEPSEEK_MODEL_PRICING_DOC_URL = "https://api-docs.deepseek.com/quick_start/pricing/";
+const ACTIVE_RUNTIME_TURN_STATUSES = new Set<RuntimeTurnStatus>(["queued", "running", "cancelling"]);
 
 interface DeepSeekModelPreset {
   value: string;
@@ -151,10 +180,11 @@ const defaultSettings: DesktopSettings = {
   mcpEnabled: false,
   allowShell: false,
   maxSubagents: 10,
+  processStreamEnabled: true,
   harnessEnabled: false,
   launchAction: "tui",
   rememberWorkspace: true,
-  enabledSkills: ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"],
+  enabledSkills: ["superpowers", "ui-ux-pro-max", "cron-scheduler", "skill-downloader"],
   enabledMcpServers: [],
   mobileBridgeEnabled: false,
   mobileBridgeHost: "127.0.0.1",
@@ -174,12 +204,12 @@ const skillPresets: SkillPreset[] = [
     tools: ["Plan", "Patch", "Verify"]
   },
   {
-    id: "ui-ux-design",
-    name: "UI/UX 设计",
-    description: "为桌面端、网页和工具界面提供布局、状态和交互质量检查。",
+    id: "ui-ux-pro-max",
+    name: "UI/UX Pro Max",
+    description: "导入完整 UI/UX Pro Max 设计智能库，包含样式、配色、字体、图表、UX 和多技术栈检索。",
     icon: "palette",
     category: "Design",
-    tools: ["Layout", "States", "Visual QA"]
+    tools: ["Search", "Design System", "Visual QA"]
   },
   {
     id: "cron-scheduler",
@@ -200,6 +230,32 @@ const skillPresets: SkillPreset[] = [
 ];
 
 const mcpPresets: McpPreset[] = [
+  {
+    id: "filesystem",
+    name: "Filesystem",
+    description: "将当前 workspace 作为 MCP 文件上下文暴露给 Agent。",
+    command: "npx -y @modelcontextprotocol/server-filesystem <workspace>",
+    envHint: "Workspace path",
+    accent: "green",
+    category: "Coding",
+    source: "@modelcontextprotocol/server-filesystem",
+    downloads: 357283,
+    auth: "None",
+    safety: "High"
+  },
+  {
+    id: "github",
+    name: "GitHub",
+    description: "连接仓库、Issue、PR 和代码搜索。需要 GitHub token。",
+    command: "npx -y @modelcontextprotocol/server-github",
+    envHint: "GITHUB_PERSONAL_ACCESS_TOKEN",
+    accent: "blue",
+    category: "Coding",
+    source: "@modelcontextprotocol/server-github",
+    downloads: 109525,
+    auth: "Token",
+    safety: "High"
+  },
   {
     id: "playwright",
     name: "Playwright",
@@ -227,16 +283,16 @@ const mcpPresets: McpPreset[] = [
     safety: "Low"
   },
   {
-    id: "filesystem",
-    name: "Filesystem",
-    description: "将当前 workspace 作为 MCP 文件上下文暴露给 Agent。",
-    command: "npx -y @modelcontextprotocol/server-filesystem <workspace>",
-    envHint: "Workspace path",
-    accent: "green",
-    category: "Coding",
-    source: "@modelcontextprotocol/server-filesystem",
-    downloads: 357283,
-    auth: "None",
+    id: "postgres",
+    name: "Postgres",
+    description: "只读/查询 PostgreSQL 数据库结构和数据，适合全栈项目排查。",
+    command: "npx -y @modelcontextprotocol/server-postgres <connection-string>",
+    envHint: "POSTGRES_CONNECTION_STRING",
+    accent: "blue",
+    category: "Data",
+    source: "@modelcontextprotocol/server-postgres",
+    downloads: 96218,
+    auth: "Connection",
     safety: "High"
   },
   {
@@ -251,32 +307,6 @@ const mcpPresets: McpPreset[] = [
     downloads: 313116,
     auth: "OAuth",
     safety: "Medium"
-  },
-  {
-    id: "github",
-    name: "GitHub",
-    description: "连接仓库、Issue、PR 和代码搜索。需要 GitHub token。",
-    command: "npx -y @modelcontextprotocol/server-github",
-    envHint: "GITHUB_PERSONAL_ACCESS_TOKEN",
-    accent: "blue",
-    category: "Coding",
-    source: "@modelcontextprotocol/server-github",
-    downloads: 109525,
-    auth: "Token",
-    safety: "High"
-  },
-  {
-    id: "postgres",
-    name: "Postgres",
-    description: "只读/查询 PostgreSQL 数据库结构和数据，适合全栈项目排查。",
-    command: "npx -y @modelcontextprotocol/server-postgres <connection-string>",
-    envHint: "POSTGRES_CONNECTION_STRING",
-    accent: "blue",
-    category: "Data",
-    source: "@modelcontextprotocol/server-postgres",
-    downloads: 96218,
-    auth: "Connection",
-    safety: "High"
   },
   {
     id: "sequential-thinking",
@@ -458,6 +488,10 @@ const modelPresets: DeepSeekModelPreset[] = [
   }
 ];
 
+const primaryModelPresets = modelPresets.filter((preset) => (
+  preset.value === "deepseek-v4-pro" || preset.value === "deepseek-v4-flash"
+));
+
 function findModelPreset(model: string) {
   return modelPresets.find((preset) => preset.value === model);
 }
@@ -512,12 +546,12 @@ const uiCopy = {
       planTitle: "Plan",
       harnessTitle: "Agent",
       yoloTitle: "YOLO",
-      planContent: "正在规划。",
-      execContent: "正在处理。",
-      yoloContent: "正在处理。"
+      planContent: "DeepSeek TUI 已进入 Plan 模式，正在分析目标并生成不会改动文件的执行计划。",
+      execContent: "DeepSeek TUI Agent 正在读取 workspace、调用工具并处理这条任务；完成后会把主要回复写在这里。",
+      yoloContent: "DeepSeek TUI YOLO 模式已接管任务，正在按高权限执行；完成后会把主要回复写在这里。"
     },
     runSummary: {
-      title: "回复",
+      title: "DeepSeek TUI 回复",
       status: "状态",
       mode: "模式",
       workspace: "Workspace",
@@ -526,7 +560,7 @@ const uiCopy = {
       success: "完成",
       failed: "失败",
       noOutput: "已完成。",
-      failedShort: "未完成，请查看过程面板。",
+      failedShort: "未完成，请查看运行摘要。",
       completedShort: "已完成。"
     },
     sidebar: {
@@ -534,6 +568,7 @@ const uiCopy = {
       newChat: "新对话",
       navLabel: "对话列表",
       assistant: "DeepSeek 编程助手",
+      running: "运行中",
       automations: "定时任务",
       remote: "手机控制",
       git: "GitHub 版本",
@@ -561,7 +596,7 @@ const uiCopy = {
       chooseWorkspace: "选择 workspace",
       currentBranch: "当前分支",
       noBranch: "未检测到分支",
-      openCursor: "导出到 Cursor",
+      openCursor: "打开 Cursor",
       apiKeySaved: "API Key 已保存",
       apiKeyMissing: "设置 API Key",
       remoteStopped: "手机控制未启动"
@@ -574,19 +609,20 @@ const uiCopy = {
       automationsDesc: "只保留每天几点运行、任务内容、工作区和启用状态。",
       manageAutomations: "管理定时任务",
       mcpStatus: "MCP 工具状态",
-      mcpStatusDesc: "MCP 是给 Agent 接入浏览器、GitHub、数据库等外部工具的配置。需要 token 的工具只提示环境变量名，桌面端不保存密钥。",
+      mcpStatusDesc: "MCP 是给 Agent 接入浏览器、GitHub、数据库等外部工具的配置。需要 token 或 URL 的工具可在本机加密/本地配置后再启动。",
       manageMcp: "管理 MCP",
       off: "关闭",
       enabled: "已启用",
       selected: "已选择",
       skillsDesc: "Skills 是可新增、导入和勾选的 Markdown 指令，告诉 Agent 遇到某类任务时该怎么做。",
       manageSkills: "管理 Skills"
-    },
+	    },
 	    terminal: {
-	      clear: "清空过程",
+	      streamTitle: "流式输出",
+	      clear: "清空输出",
 	      stop: "停止",
-	      bootReady: "过程面板已就绪。\r\n",
-	      bootHint: "运行过程会显示在这里。\r\n\r\n"
+	      bootReady: "终端已就绪。\r\n",
+	      bootHint: "运行输出会显示在这里。\r\n\r\n"
 	    },
 	    runtimeAgents: {
 	      title: "Agent 运行状态",
@@ -596,7 +632,9 @@ const uiCopy = {
 	      mode: "模式",
 	      workspace: "Workspace",
 	      started: "开始",
-	      noAgents: "还没有检测到子 Agent。",
+		      noAgents: "还没有检测到 Agent。",
+          trackedCount: (count: number) => `已检测到 ${count} 个 Agent`,
+          runningCount: (count: number) => `当前 ${count} 个 Agent 正在运行`,
 	      recentEvents: "最近事件",
 	      noEvents: "暂无运行事件。",
 	      counts: (running: number, completed: number, failed: number) => `${running} 运行 / ${completed} 完成 / ${failed} 失败`,
@@ -613,8 +651,6 @@ const uiCopy = {
 	    composer: {
       modeLabel: "运行模式",
       modelLabel: "模型",
-      harness: "过程流",
-      harnessHint: "打开显示过程面板并启用 DeepSeek 思考流；关闭会停止当前过程并关闭思考流。",
       stop: "停止",
       planPlaceholder: "描述目标，Plan 模式只会输出计划，不改文件...",
       execPlaceholder: "给 Agent 模式一个编程任务...",
@@ -675,6 +711,7 @@ const uiCopy = {
       runtimeOn: "启动时会注入 MCP",
       runtimePending: "MCP 接口已打开，但还没有可注入的配置",
       runtimeOff: "启动时不会注入 MCP",
+      runtimeBlocked: "已选择 MCP，但未完成配置，启动时不会注入这些 MCP。",
       riskSuffix: "风险",
       sourceCustom: "来自自定义 JSON",
       configFailed: "MCP JSON 保存失败",
@@ -682,6 +719,40 @@ const uiCopy = {
       testing: "正在预检 MCP...",
       testOk: "MCP 预检通过",
       testFailed: "MCP 预检发现问题",
+      adapterTitle: "MCP 适配状态",
+      adapterDesc: "只有显示为可启动的 MCP 才会写入运行时配置；缺 token、缺 URL 或命令不可用时，页面只保留选择状态，不显示为已启动。",
+      setupTitle: "服务配置向导",
+      setupDesc: "打开 MCP 页面后先搜索服务；选择后直接填写 token、OAuth URL、登录信息或连接串。保存后会自动选择并启用该 MCP。",
+      setupEmptyTitle: "没有匹配的 MCP",
+      setupEmptyBody: "换一个关键词，或在下面新增自定义 MCP。",
+      selectFirst: "选择 GitHub 并配置",
+      chooseService: "选择并配置",
+      selected: "已选择",
+      notSelected: "未选择",
+      selectedNoAuth: (name: string) => `${name} 已选择并启用，无需额外凭证。`,
+      secretSavedAndEnabled: (key: string) => `${key} 已保存，MCP 已选择并启用`,
+      noMatches: "没有搜索结果",
+      openGuide: "打开配置页面",
+      noAuthRequired: "无需凭证",
+      configureEnvKey: (key: string) => `配置 ${key}`,
+      getToken: "获取 token",
+      oauthLogin: "OAuth / 登录",
+      connectionSetup: "打开连接配置",
+      viewDocs: "查看配置指南",
+      ready: "可启动",
+      needsAuth: "缺认证",
+      needsConfig: "缺配置",
+      commandMissing: "命令缺失",
+      invalidUrl: "URL 无效",
+      untested: "待预检",
+      injectable: "会启动",
+      notInjected: "不会启动",
+      configureSecret: "配置",
+      secretPlaceholder: "粘贴 token / URL / 连接串",
+      saveSecret: "保存配置",
+      secretSaved: (key: string) => `${key} 已保存`,
+      secretFailed: "配置保存失败",
+      guide: "配置指南",
       noServers: "当前没有选择 MCP 服务器，也没有自定义 MCP JSON。",
       customTitle: "新增 MCP",
       customHint: "填写一个 command 型或 URL 型 MCP，新增后会直接保存为自定义 MCP 配置。",
@@ -714,6 +785,11 @@ const uiCopy = {
       init: "初始化 Git",
       saveRemote: "保存 remote",
       copyRemote: "复制 remote",
+      switchBranch: "切换分支",
+      switchBranchOk: "分支已切换",
+      dirtyBranchBlocked: "切换分支前请先提交或暂存当前工作区改动。",
+      localBranch: "本地",
+      remoteBranch: "远程",
       refresh: "刷新",
       fetch: "Fetch",
       pull: "Pull",
@@ -836,6 +912,9 @@ const uiCopy = {
       openVSCode: "打开 VS Code",
       chooseBinary: "选择 binary",
       customDeepseekPath: "Custom deepseek path",
+      advancedRuntime: "高级运行设置",
+      advancedRuntimeHint: "默认使用内置 DeepSeek TUI。只有需要切换 provider、运行路径或高级模型时再打开。",
+      advancedModel: "高级模型",
       provider: "Provider",
       model: "Model",
       modelDoc: "官方文档",
@@ -847,8 +926,6 @@ const uiCopy = {
       nvidiaKeyPlaceholder: "粘贴 NVIDIA NIM API Key",
       allowShell: "Allow shell",
       agents: "Agents",
-      harnessMode: "过程流式输出",
-      harnessHint: "开启后显示过程面板并启用 DeepSeek thinking；关闭后下一次请求会以 reasoning_effort=off 启动。",
       setup: "Setup",
       apiKeySaveFailed: "API Key 保存失败",
       save: "保存设置"
@@ -902,12 +979,12 @@ const uiCopy = {
       planTitle: "Plan",
       harnessTitle: "Agent",
       yoloTitle: "YOLO",
-      planContent: "Planning.",
-      execContent: "Working.",
-      yoloContent: "Working."
+      planContent: "DeepSeek TUI is in Plan mode and is analyzing the goal before producing a non-mutating plan.",
+      execContent: "DeepSeek TUI Agent is reading the workspace, using tools, and working on this task. The main reply will appear here when it finishes.",
+      yoloContent: "DeepSeek TUI YOLO mode is handling this task with high permissions. The main reply will appear here when it finishes."
     },
     runSummary: {
-      title: "Reply",
+      title: "DeepSeek TUI reply",
       status: "Status",
       mode: "Mode",
       workspace: "Workspace",
@@ -916,7 +993,7 @@ const uiCopy = {
       success: "Completed",
       failed: "Failed",
       noOutput: "Completed.",
-      failedShort: "Not completed. See the process panel.",
+      failedShort: "Not completed. See the run summary.",
       completedShort: "Completed."
     },
     sidebar: {
@@ -924,6 +1001,7 @@ const uiCopy = {
       newChat: "New chat",
       navLabel: "Conversations",
       assistant: "DeepSeek coding assistant",
+      running: "Running",
       automations: "Scheduled Tasks",
       remote: "Mobile Control",
       git: "GitHub Versions",
@@ -951,7 +1029,7 @@ const uiCopy = {
       chooseWorkspace: "Choose workspace",
       currentBranch: "Current branch",
       noBranch: "No branch detected",
-      openCursor: "Export to Cursor",
+      openCursor: "Open Cursor",
       apiKeySaved: "API Key saved",
       apiKeyMissing: "Set API Key",
       remoteStopped: "Mobile control stopped"
@@ -964,19 +1042,20 @@ const uiCopy = {
       automationsDesc: "Keep only the task prompt, workspace, daily run time, and active status.",
       manageAutomations: "Manage scheduled tasks",
       mcpStatus: "MCP tool status",
-      mcpStatusDesc: "MCP connects the Agent to external tools such as browsers, GitHub, and databases. Token-based tools show env-var names only; this app does not save secrets.",
+      mcpStatusDesc: "MCP connects the Agent to external tools such as browsers, GitHub, and databases. Token or URL based tools can be configured locally before launch.",
       manageMcp: "Manage MCP",
       off: "Off",
       enabled: "Enabled",
       selected: "Selected",
       skillsDesc: "Skills are Markdown instructions you can create, import, and enable for specific work.",
       manageSkills: "Manage Skills"
-    },
+	    },
 	    terminal: {
-	      clear: "Clear process",
+	      streamTitle: "Streaming output",
+	      clear: "Clear output",
 	      stop: "Stop",
-	      bootReady: "Process panel is ready.\r\n",
-	      bootHint: "Run progress will appear here.\r\n\r\n"
+	      bootReady: "Terminal is ready.\r\n",
+	      bootHint: "Run output will appear here.\r\n\r\n"
 	    },
 	    runtimeAgents: {
 	      title: "Agent Runtime",
@@ -986,7 +1065,9 @@ const uiCopy = {
 	      mode: "Mode",
 	      workspace: "Workspace",
 	      started: "Started",
-	      noAgents: "No sub-agents detected yet.",
+		      noAgents: "No agents detected yet.",
+          trackedCount: (count: number) => `${count} agent${count === 1 ? "" : "s"} detected`,
+          runningCount: (count: number) => `${count} agent${count === 1 ? "" : "s"} running now`,
 	      recentEvents: "Recent events",
 	      noEvents: "No runtime events yet.",
 	      counts: (running: number, completed: number, failed: number) => `${running} running / ${completed} completed / ${failed} failed`,
@@ -1003,8 +1084,6 @@ const uiCopy = {
 	    composer: {
       modeLabel: "Run mode",
       modelLabel: "Model",
-      harness: "Process Stream",
-      harnessHint: "Show the process panel and enable DeepSeek thinking output; turning it off stops the current run and disables thinking output.",
       stop: "Stop",
       planPlaceholder: "Describe the goal. Plan mode will only produce a plan and will not edit files...",
       execPlaceholder: "Give Agent mode a coding task...",
@@ -1065,6 +1144,7 @@ const uiCopy = {
       runtimeOn: "MCP will be injected at launch",
       runtimePending: "MCP is on, but no injectable config is selected yet",
       runtimeOff: "MCP will not be injected at launch",
+      runtimeBlocked: "MCP is selected but not configured, so it will not be injected at launch.",
       riskSuffix: "risk",
       sourceCustom: "Loaded from custom JSON",
       configFailed: "MCP JSON save failed",
@@ -1072,6 +1152,40 @@ const uiCopy = {
       testing: "Checking MCP...",
       testOk: "MCP preflight passed",
       testFailed: "MCP preflight found issues",
+      adapterTitle: "MCP adapter status",
+      adapterDesc: "Only MCP servers marked startable are written to runtime config. Missing tokens, URLs, or commands keep the server selected but not started.",
+      setupTitle: "Service setup guide",
+      setupDesc: "Opening MCP starts here: search for a service, then enter its token, OAuth URL, login detail, or connection string. Saving selects and enables it.",
+      setupEmptyTitle: "No MCP matches",
+      setupEmptyBody: "Try another keyword or add a custom MCP below.",
+      selectFirst: "Select GitHub and configure",
+      chooseService: "Select and configure",
+      selected: "Selected",
+      notSelected: "Not selected",
+      selectedNoAuth: (name: string) => `${name} selected and enabled. No credential is required.`,
+      secretSavedAndEnabled: (key: string) => `${key} saved. MCP selected and enabled.`,
+      noMatches: "No search results",
+      openGuide: "Open setup page",
+      noAuthRequired: "No credential needed",
+      configureEnvKey: (key: string) => `Configure ${key}`,
+      getToken: "Get token",
+      oauthLogin: "OAuth / login",
+      connectionSetup: "Open connection setup",
+      viewDocs: "View setup guide",
+      ready: "Startable",
+      needsAuth: "Needs auth",
+      needsConfig: "Needs config",
+      commandMissing: "Command missing",
+      invalidUrl: "Invalid URL",
+      untested: "Needs check",
+      injectable: "Will start",
+      notInjected: "Will not start",
+      configureSecret: "Configure",
+      secretPlaceholder: "Paste token / URL / connection string",
+      saveSecret: "Save config",
+      secretSaved: (key: string) => `${key} saved`,
+      secretFailed: "Config save failed",
+      guide: "Setup guide",
       noServers: "No MCP servers are selected and no custom MCP JSON is set.",
       customTitle: "Add MCP",
       customHint: "Add a command-based or URL-based MCP server and save it directly as the custom MCP config.",
@@ -1104,6 +1218,11 @@ const uiCopy = {
       init: "Initialize Git",
       saveRemote: "Save remote",
       copyRemote: "Copy remote",
+      switchBranch: "Switch branch",
+      switchBranchOk: "Branch switched",
+      dirtyBranchBlocked: "Commit or stash local changes before switching branches.",
+      localBranch: "Local",
+      remoteBranch: "Remote",
       refresh: "Refresh",
       fetch: "Fetch",
       pull: "Pull",
@@ -1226,6 +1345,9 @@ const uiCopy = {
       openVSCode: "Open VS Code",
       chooseBinary: "Choose binary",
       customDeepseekPath: "Custom deepseek path",
+      advancedRuntime: "Advanced runtime settings",
+      advancedRuntimeHint: "The bundled DeepSeek TUI runtime is used by default. Open only when changing provider, runtime path, or advanced model choices.",
+      advancedModel: "Advanced model",
       provider: "Provider",
       model: "Model",
       modelDoc: "Official docs",
@@ -1237,8 +1359,6 @@ const uiCopy = {
       nvidiaKeyPlaceholder: "Paste NVIDIA NIM API Key",
       allowShell: "Allow shell",
       agents: "Agents",
-      harnessMode: "Process stream output",
-      harnessHint: "When enabled, the process panel is visible and DeepSeek thinking is enabled; when disabled, the next request starts with reasoning_effort=off.",
       setup: "Setup",
       apiKeySaveFailed: "API key save failed",
       save: "Save settings"
@@ -1275,9 +1395,9 @@ const skillTranslations: Record<AppLanguage, Record<string, Partial<Pick<SkillPr
       description: "Default workflow for planning, task decomposition, code edits, and self-checks.",
       category: "Agent"
     },
-    "ui-ux-design": {
-      name: "UI/UX Design",
-      description: "Layout, state, and interaction quality checks for desktop, web, and tool interfaces.",
+    "ui-ux-pro-max": {
+      name: "UI/UX Pro Max",
+      description: "Complete UI/UX Pro Max design intelligence with searchable styles, palettes, typography, charts, UX rules, and stack guidance.",
       category: "Design"
     },
     "cron-scheduler": {
@@ -1485,6 +1605,72 @@ function getMcpText(preset: McpPreset, language: AppLanguage) {
   };
 }
 
+function mcpEnvKeysFromHint(value: string) {
+  return String(value || "")
+    .split(/[,\s/]+/)
+    .map((item) => item.trim())
+    .filter((item) => /^[A-Z0-9_]+$/.test(item));
+}
+
+function mcpGuideForPreset(preset: McpPreset, language: AppLanguage) {
+  const guides: Record<string, string> = {
+    github: "https://github.com/settings/tokens",
+    "mcp-remote": "https://www.npmjs.com/package/mcp-remote",
+    postgres: "https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING",
+    slack: "https://api.slack.com/apps",
+    notion: "https://www.notion.so/profile/integrations",
+    sentry: "https://sentry.io/settings/account/api/auth-tokens/",
+    figma: "https://www.figma.com/developers/api#access-tokens",
+    stripe: "https://dashboard.stripe.com/apikeys",
+    "brave-search": "https://api.search.brave.com/app/keys",
+    "google-maps": "https://console.cloud.google.com/google/maps-apis/credentials",
+    pannel: "https://github.com/1Panel-dev/mcp-1panel"
+  };
+  return {
+    url: guides[preset.id] || "",
+    label: language === "zh" ? "打开配置页面" : "Open setup page"
+  };
+}
+
+function mcpGuideActionLabel(preset: McpPreset, language: AppLanguage) {
+  if (preset.auth === "Token") {
+    return language === "zh" ? uiCopy.zh.mcp.getToken : uiCopy.en.mcp.getToken;
+  }
+  if (preset.auth === "OAuth") {
+    return language === "zh" ? uiCopy.zh.mcp.oauthLogin : uiCopy.en.mcp.oauthLogin;
+  }
+  if (preset.auth === "Connection") {
+    return language === "zh" ? uiCopy.zh.mcp.connectionSetup : uiCopy.en.mcp.connectionSetup;
+  }
+  return language === "zh" ? uiCopy.zh.mcp.viewDocs : uiCopy.en.mcp.viewDocs;
+}
+
+function mcpSetupButtonLabel(auth: McpPreset["auth"], key: string, language: AppLanguage) {
+  if (auth === "OAuth") {
+    return language === "zh" ? `配置 ${key || "OAuth"}` : `Configure ${key || "OAuth"}`;
+  }
+  if (auth === "Connection") {
+    return language === "zh" ? `输入 ${key || "连接串"}` : `Enter ${key || "connection"}`;
+  }
+  if (/TOKEN|SECRET|API_KEY|ACCESS_KEY/i.test(key)) {
+    return language === "zh" ? "输入 token" : "Enter token";
+  }
+  return language === "zh" ? `配置 ${key}` : `Configure ${key}`;
+}
+
+function mcpSecretPlaceholderForKey(key: string, language: AppLanguage) {
+  if (/URL|HOST/i.test(key)) {
+    return language === "zh" ? "粘贴登录地址 / MCP URL" : "Paste login address / MCP URL";
+  }
+  if (/CONNECTION/i.test(key)) {
+    return language === "zh" ? "粘贴连接串" : "Paste connection string";
+  }
+  if (/TEAM_ID/i.test(key)) {
+    return language === "zh" ? "粘贴 Team ID" : "Paste team ID";
+  }
+  return language === "zh" ? "粘贴 token 或 API key" : "Paste token or API key";
+}
+
 function mcpArgsFromLines(value: string) {
   return value
     .split(/\r?\n/)
@@ -1565,8 +1751,42 @@ function createEmptyRuntimeSnapshot(): RuntimeSnapshot {
   };
 }
 
+function createEmptyRuntimeOrchestratorSnapshot(): RuntimeOrchestratorSnapshot {
+  return {
+    status: "idle",
+    maxConcurrent: 8,
+    maxConcurrentSessions: 8,
+    activeCount: 0,
+    queueDepth: 0,
+    counts: {
+      total: 0,
+      queued: 0,
+      running: 0,
+      cancelling: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0
+    },
+    conversations: [],
+    turns: [],
+    events: []
+  };
+}
+
 function runtimeStatusText(status: RuntimeRunStatus | RuntimeAgentStatus, language: AppLanguage) {
   return uiCopy[language].runtimeAgents.statuses[status] || status;
+}
+
+function RunningActivityMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <span className={compact ? "running-activity-mark compact" : "running-activity-mark"} aria-hidden>
+      <Fish className="running-fish" size={compact ? 14 : 16} />
+      <span className="running-spray">
+        <Droplets size={compact ? 10 : 12} />
+        <Waves size={compact ? 12 : 14} />
+      </span>
+    </span>
+  );
 }
 
 function gitStatusLabel(change: GitChangeInfo) {
@@ -1607,6 +1827,22 @@ function createNewConversationMessage(language: AppLanguage): ChatMessage {
     title: uiCopy[language].newConversation.title,
     content: uiCopy[language].newConversation.content
   };
+}
+
+function sanitizeConversationMessages(messages: ChatMessage[], language: AppLanguage) {
+  const staleRuntimeStatuses = new Set(["queued", "accepted", "model-selected"]);
+  const staleRuntimeMessage = language === "zh"
+    ? "上一版本只记录了运行队列确认，请重新发送这条任务。"
+    : "A previous version only stored the runtime queue acknowledgement. Please send this task again.";
+  return messages.map((message) => {
+    if (message.role !== "assistant") return message;
+    const content = String(message.content || "").trim().toLowerCase();
+    if (!staleRuntimeStatuses.has(content)) return message;
+    return {
+      ...message,
+      content: staleRuntimeMessage
+    };
+  });
 }
 
 function projectIdFromWorkspace(workspacePath: string) {
@@ -1734,7 +1970,17 @@ function deleteConversationSession(store: ConversationStore, sessionId: string):
 function normalizeConversationStore(store: ConversationStore, settings: DesktopSettings, language: AppLanguage) {
   const sorted = sortConversationStore({
     activeSessionId: store.activeSessionId || "",
-    projects: Array.isArray(store.projects) ? store.projects : []
+    projects: Array.isArray(store.projects)
+      ? store.projects.map((project) => ({
+        ...project,
+        sessions: Array.isArray(project.sessions)
+          ? project.sessions.map((session) => ({
+            ...session,
+            messages: sanitizeConversationMessages(Array.isArray(session.messages) ? session.messages : [], language)
+          }))
+          : []
+      }))
+      : []
   });
   if (findConversationSession(sorted, sorted.activeSessionId)) {
     return sorted;
@@ -1775,36 +2021,58 @@ function appendTerminalCapture(current: string, chunk: string) {
   return next.length > 60000 ? next.slice(-60000) : next;
 }
 
+function runtimeTurnOutputChunk(event: RuntimeTurnEvent) {
+  const eventType = event.event || event.type || "";
+  if (eventType === "response_delta" && typeof event.delta === "string") {
+    return event.delta;
+  }
+  if (eventType === "runtime_stderr" && typeof event.message === "string") {
+    return event.message;
+  }
+  return "";
+}
+
 function terminalExcerpt(output: string, fallback: string) {
   const clean = stripAnsi(output);
   if (!clean) return fallback;
   return clean.length > 6000 ? `...${clean.slice(-6000)}` : clean;
 }
 
-function compactAgentReply(output: string, fallback: string) {
+function conversationAgentReply(output: string, fallback: string) {
   const clean = stripAnsi(output);
   if (!clean) return fallback;
-  const lines = clean
-    .split("\n")
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .filter((line) => !/^\[harness\b/i.test(line))
-    .filter((line) => !/^DeepSeek TUI Desktop/i.test(line))
-    .filter((line) => !/^Process panel/i.test(line))
-    .filter((line) => !/^Runtime output/i.test(line))
-    .filter((line) => !/^Run progress/i.test(line))
-    .filter((line) => !/^启动后运行输出/i.test(line))
-    .filter((line) => !/^运行过程会显示/i.test(line));
-  const useful = lines.slice(-4).join("\n");
+  const lines: string[] = [];
+  let previousBlank = false;
+  for (const rawLine of clean.split("\n")) {
+    const line = rawLine.replace(/[ \t]+$/g, "");
+    const trimmed = line.trim();
+    if (/^\[harness\b/i.test(trimmed)) continue;
+    if (/^DeepSeek TUI Desktop/i.test(trimmed)) continue;
+    if (/^Terminal is ready/i.test(trimmed)) continue;
+    if (/^Runtime output/i.test(trimmed)) continue;
+    if (/^Run progress/i.test(trimmed)) continue;
+    if (/^终端已就绪/i.test(trimmed)) continue;
+    if (/^启动后运行输出/i.test(trimmed)) continue;
+    if (/^运行过程会显示/i.test(trimmed)) continue;
+    if (!trimmed) {
+      if (!previousBlank && lines.length > 0) lines.push("");
+      previousBlank = true;
+      continue;
+    }
+    previousBlank = false;
+    lines.push(line);
+  }
+  while (lines[lines.length - 1] === "") lines.pop();
+  const useful = lines.slice(-28).join("\n").trim();
   if (!useful) return fallback;
-  return useful.length > 360 ? `${useful.slice(0, 357)}...` : useful;
+  return useful.length > 2400 ? `...${useful.slice(-2400)}` : useful;
 }
 
-function formatConciseRunReply(capture: RunCapture, exit: { exitCode?: number; signal?: number }, language: AppLanguage) {
+function formatConversationRunReply(capture: RunCapture, exit: { exitCode?: number; signal?: number }, language: AppLanguage) {
   const copy = uiCopy[language].runSummary;
   const ok = !exit.signal && (exit.exitCode === 0 || typeof exit.exitCode === "undefined");
   if (!ok) return copy.failedShort;
-  return compactAgentReply(capture.output, copy.completedShort);
+  return conversationAgentReply(capture.output, copy.completedShort);
 }
 
 function formatRunSummary(capture: RunCapture, exit: { exitCode?: number; signal?: number }, language: AppLanguage) {
@@ -1861,6 +2129,7 @@ function App() {
   const [settings, setSettings] = useState<DesktopSettings>(defaultSettings);
   const [runtime, setRuntime] = useState<RuntimeCheck | null>(null);
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<RuntimeSnapshot>(() => createEmptyRuntimeSnapshot());
+  const [runtimeOrchestratorSnapshot, setRuntimeOrchestratorSnapshot] = useState<RuntimeOrchestratorSnapshot>(() => createEmptyRuntimeOrchestratorSnapshot());
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEvent[]>([]);
   const [remoteStatus, setRemoteStatus] = useState<RemoteBridgeStatus | null>(null);
   const [running, setRunning] = useState(false);
@@ -1874,7 +2143,7 @@ function App() {
   const [inspectorPanel, setInspectorPanel] = useState<InspectorPanel>(null);
   const [mainView, setMainView] = useState<MainView>("chat");
   const [toolPage, setToolPage] = useState<ToolPage>("overview");
-  const [agentMode, setAgentMode] = useState<AgentMode>("agent");
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>("agent");
   const [mcpSearch, setMcpSearch] = useState("");
   const [mcpCategory, setMcpCategory] = useState<"All" | McpPreset["category"]>("All");
   const [customization, setCustomization] = useState<CustomizationDraft | null>(null);
@@ -1889,6 +2158,9 @@ function App() {
   const [templateMessage, setTemplateMessage] = useState("");
   const [mcpTestResult, setMcpTestResult] = useState<McpTestResult | null>(null);
   const [mcpTesting, setMcpTesting] = useState(false);
+  const [mcpSecretTarget, setMcpSecretTarget] = useState<McpSecretTarget | null>(null);
+  const [mcpSecretValue, setMcpSecretValue] = useState("");
+  const [mcpSecretSaving, setMcpSecretSaving] = useState(false);
   const [automationTasks, setAutomationTasks] = useState<AutomationTask[]>([]);
   const [automationDraft, setAutomationDraft] = useState<AutomationDraft>(() => createAutomationDraft(defaultSettings));
   const [automationMessage, setAutomationMessage] = useState("");
@@ -1904,6 +2176,10 @@ function App() {
   const [gitDiffBusy, setGitDiffBusy] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(() => [createWelcomeMessage(defaultSettings.language)]);
   const [conversationStore, setConversationStore] = useState<ConversationStore>({ activeSessionId: "", projects: [] });
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
+  const historyScrollRef = useRef<HTMLElement | null>(null);
+  const mcpSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const [historyScrollState, setHistoryScrollState] = useState({ canScrollUp: false, canScrollDown: false });
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -1935,15 +2211,88 @@ function App() {
   const currentBranchLabel = gitStatus?.isRepo && gitStatus.branch
     ? gitStatus.branch
     : t.topbar.noBranch;
-  const processStreamEnabled = settings.harnessEnabled;
+  const processStreamEnabled = settings.processStreamEnabled !== false;
+  const mcpSecretKey = mcpSecretTarget?.key || "";
   const selectedProjectId = useMemo(
     () => projectIdFromWorkspace(selectedWorkspacePath),
     [selectedWorkspacePath]
   );
+  const activeSessionRuntimeTurns = useMemo(
+    () => runtimeOrchestratorSnapshot.turns.filter((turn) => (
+      turn.conversationId === conversationStore.activeSessionId && ACTIVE_RUNTIME_TURN_STATUSES.has(turn.status)
+    )),
+    [conversationStore.activeSessionId, runtimeOrchestratorSnapshot.turns]
+  );
+  const activeSessionTerminalRunning = running
+    && (!terminalRunSessionIdRef.current || terminalRunSessionIdRef.current === conversationStore.activeSessionId);
+  const activeSessionBusy = activeSessionRuntimeTurns.length > 0 || activeSessionTerminalRunning;
+  const activeSessionRunningReplyIds = useMemo(
+    () => new Set(activeSessionRuntimeTurns.map((turn) => turn.replyMessageId).filter(Boolean)),
+    [activeSessionRuntimeTurns]
+  );
+  const appRunning = running || runtimeSnapshot.status === "running" || runtimeOrchestratorSnapshot.status === "running" || runtimeOrchestratorSnapshot.status === "queued";
+  const historyScrollUpLabel = language === "zh" ? "向上移动对话列表" : "Move conversation list up";
+  const historyScrollDownLabel = language === "zh" ? "向下移动对话列表" : "Move conversation list down";
+
+  const applyConversationStore = useCallback((nextStore: ConversationStore) => {
+    setConversationStore(nextStore);
+    desktop.saveConversationHistory(nextStore).catch(() => undefined);
+    return nextStore;
+  }, [desktop]);
+
+  const commitConversationStore = useCallback((updater: (current: ConversationStore) => ConversationStore) => {
+    setConversationStore((current) => {
+      const nextStore = updater(current);
+      desktop.saveConversationHistory(nextStore).catch(() => undefined);
+      return nextStore;
+    });
+  }, [desktop]);
 
   useEffect(() => {
     activeSessionIdRef.current = conversationStore.activeSessionId;
   }, [conversationStore.activeSessionId]);
+
+  const updateHistoryScrollState = useCallback(() => {
+    const node = historyScrollRef.current;
+    if (!node) {
+      setHistoryScrollState({ canScrollUp: false, canScrollDown: false });
+      return;
+    }
+    const maxScrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+    setHistoryScrollState({
+      canScrollUp: node.scrollTop > 2,
+      canScrollDown: node.scrollTop < maxScrollTop - 2
+    });
+  }, []);
+
+  const scrollHistory = useCallback((direction: "up" | "down") => {
+    const node = historyScrollRef.current;
+    if (!node) return;
+    const historyScrollStep = Math.max(160, Math.round(node.clientHeight * 0.72));
+    node.scrollBy({
+      top: direction === "up" ? -historyScrollStep : historyScrollStep,
+      behavior: "smooth"
+    });
+    window.setTimeout(updateHistoryScrollState, 180);
+  }, [updateHistoryScrollState]);
+
+  useEffect(() => {
+    updateHistoryScrollState();
+  }, [conversationStore.projects, expandedProjectIds, updateHistoryScrollState]);
+
+  useEffect(() => {
+    updateHistoryScrollState();
+    window.addEventListener("resize", updateHistoryScrollState);
+    return () => window.removeEventListener("resize", updateHistoryScrollState);
+  }, [updateHistoryScrollState]);
+
+  useEffect(() => {
+    if (!activeSession?.projectId) return;
+    setExpandedProjectIds((current) => {
+      if (current.size === 1 && current.has(activeSession.projectId)) return current;
+      return new Set([activeSession.projectId]);
+    });
+  }, [activeSession?.projectId]);
 
   useEffect(() => {
     let active = true;
@@ -1967,6 +2316,77 @@ function App() {
       offEvent();
     };
   }, [desktop]);
+
+  useEffect(() => {
+    let active = true;
+    desktop.getRuntimeOrchestratorSnapshot().then((snapshot) => {
+      if (active) setRuntimeOrchestratorSnapshot(snapshot);
+    }).catch(() => {
+      // Older preview bridges may not expose the app-server runtime during hot reload.
+    });
+    const offSnapshot = desktop.onRuntimeOrchestratorSnapshot((snapshot) => {
+      setRuntimeOrchestratorSnapshot(snapshot);
+    });
+    const offTurn = desktop.onRuntimeTurnEvent((event) => {
+      if (!event?.type && !event?.event) return;
+      const eventType = event.type || event.event || "";
+      const sessionId = event.conversationId || "";
+      const chunk = runtimeTurnOutputChunk(event);
+      if (sessionId && chunk) {
+        terminalOutputBySessionRef.current[sessionId] = appendTerminalCapture(
+          terminalOutputBySessionRef.current[sessionId] || "",
+          chunk
+        );
+        if (activeSessionIdRef.current === sessionId) {
+          terminalRef.current?.write(chunk);
+        }
+      }
+      if (eventType === "turn-started") {
+        if (!sessionId || activeSessionIdRef.current === sessionId) {
+          setStatus({ type: "running" });
+        }
+      }
+      if (eventType === "turn-completed" || eventType === "turn-failed" || eventType === "turn-cancelled") {
+        const replyMessageId = event.replyMessageId || "";
+        if (sessionId && replyMessageId) {
+          const content = eventType === "turn-completed"
+            ? (event.output || t.runSummary.completedShort)
+            : eventType === "turn-cancelled"
+              ? t.status.stopped
+              : (event.error || t.runSummary.failedShort);
+          const message: ChatMessage = {
+            id: replyMessageId,
+            role: "assistant",
+            title: t.runSummary.title,
+            content
+          };
+          commitConversationStore((current) => updateConversationSession(current, sessionId, language, (session) => ({
+            ...session,
+            runtimeThreadId: event.threadId || session.runtimeThreadId,
+            updatedAt: new Date().toISOString(),
+            messages: session.messages.map((candidate) => candidate.id === replyMessageId ? message : candidate)
+          })));
+          if (activeSessionIdRef.current === sessionId) {
+            setMessages((current) => current.map((candidate) => candidate.id === replyMessageId ? message : candidate));
+          }
+        }
+        if (!sessionId || activeSessionIdRef.current === sessionId) {
+          setStatus(
+            eventType === "turn-completed"
+              ? { type: "exited", exitCode: 0 }
+              : eventType === "turn-cancelled"
+                ? { type: "stopped" }
+                : { type: "error", message: event.error || t.runSummary.failedShort }
+          );
+        }
+      }
+    });
+    return () => {
+      active = false;
+      offSnapshot();
+      offTurn();
+    };
+  }, [commitConversationStore, desktop, language, t]);
 
   const fitTerminal = useCallback(() => {
     const host = terminalHostRef.current;
@@ -2000,20 +2420,6 @@ function App() {
   const updateSetting = useCallback(<K extends keyof DesktopSettings>(key: K, value: DesktopSettings[K]) => {
     setSettings((current) => ({ ...current, [key]: value }));
   }, []);
-
-  const applyConversationStore = useCallback((nextStore: ConversationStore) => {
-    setConversationStore(nextStore);
-    desktop.saveConversationHistory(nextStore).catch(() => undefined);
-    return nextStore;
-  }, [desktop]);
-
-  const commitConversationStore = useCallback((updater: (current: ConversationStore) => ConversationStore) => {
-    setConversationStore((current) => {
-      const nextStore = updater(current);
-      desktop.saveConversationHistory(nextStore).catch(() => undefined);
-      return nextStore;
-    });
-  }, [desktop]);
 
   const refreshRuntime = useCallback(async (nextSettings?: Partial<DesktopSettings>) => {
     const result = await desktop.checkRuntime({ ...settings, ...(nextSettings || {}) });
@@ -2119,6 +2525,14 @@ function App() {
   }, [loadCustomization, mainView, toolPage]);
 
   useEffect(() => {
+    if (mainView !== "tools" || toolPage !== "mcp") return;
+    const frame = window.requestAnimationFrame(() => {
+      mcpSearchInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [mainView, toolPage]);
+
+  useEffect(() => {
     if (inspectorPanel === "git") {
       loadGitStatus().catch((error) => {
         setGitMessage(error instanceof Error ? error.message : t.git.actionFailed);
@@ -2165,7 +2579,7 @@ function App() {
   }, [remoteStatus?.auth.account]);
 
   useEffect(() => {
-    if (!processStreamEnabled && mainView !== "terminal") {
+    if (mainView !== "chat" && mainView !== "terminal") {
       return;
     }
 
@@ -2228,7 +2642,7 @@ function App() {
       terminalRef.current = null;
       fitRef.current = null;
     };
-  }, [desktop, fitTerminal, mainView, processStreamEnabled, renderTerminalForSession]);
+  }, [desktop, fitTerminal, mainView, renderTerminalForSession]);
 
   useEffect(() => {
     window.requestAnimationFrame(fitTerminal);
@@ -2261,7 +2675,8 @@ function App() {
         const message: ChatMessage = {
           id: capture.replyMessageId || createId(),
           role: "assistant",
-          content: formatConciseRunReply(capture, exit, language)
+          title: t.runSummary.title,
+          content: formatConversationRunReply(capture, exit, language)
         };
         commitConversationStore((current) => updateConversationSession(current, capture.sessionId, language, (session) => ({
           ...session,
@@ -2281,17 +2696,10 @@ function App() {
       offData();
       offExit();
     };
-  }, [commitConversationStore, desktop, language]);
-
-  const selectedRuntimeLabel = useMemo(() => {
-    if (!runtime) return t.status.checking;
-    if (!runtime.selectedExists) return t.status.missing;
-    return runtime.version || t.status.runtimeReady;
-  }, [runtime, t]);
+  }, [commitConversationStore, desktop, language, t]);
 
   const enabledMcpCount = settings.enabledMcpServers.length;
   const enabledSkillCount = settings.enabledSkills.length;
-  const mcpRuntimeReady = settings.mcpEnabled && (settings.enabledMcpServers.length > 0 || Boolean(settings.mcpConfigPath.trim()));
   const skillsRuntimeReady = settings.skillsEnabled && (settings.enabledSkills.length > 0 || Boolean(settings.skillsDir.trim()));
   const installedAutomationCount = automationTasks.filter((task) => automationStatus(task) === "ACTIVE").length;
   const skillCatalog = useMemo<SkillCatalogItem[]>(() => {
@@ -2338,6 +2746,78 @@ function App() {
       return matchesCategory && matchesQuery;
     });
   }, [language, mcpCategory, mcpSearch]);
+  const selectedMcpPresets = useMemo(() => {
+    return mcpPresets.filter((preset) => settings.enabledMcpServers.includes(preset.id));
+  }, [settings.enabledMcpServers]);
+  const mcpAdapterRows = useMemo<McpAdapterRow[]>(() => {
+    const testById = new Map((mcpTestResult?.servers || []).map((server) => [server.id, server]));
+    const rows: McpAdapterRow[] = selectedMcpPresets.map((preset) => {
+      const text = getMcpText(preset, language);
+      const server = testById.get(preset.id);
+      const guide = mcpGuideForPreset(preset, language);
+      const envKeys = Array.from(new Set([...(server?.missingEnv || []), ...mcpEnvKeysFromHint(text.envHint)]));
+      const envKey = envKeys[0] || "";
+      const status: McpAdapterRow["status"] = server?.status || "untested";
+      const statusMap: Record<McpAdapterRow["status"], string> = {
+        ready: t.mcp.ready,
+        "needs-auth": t.mcp.needsAuth,
+        "needs-config": t.mcp.needsConfig,
+        "command-missing": t.mcp.commandMissing,
+        "invalid-url": t.mcp.invalidUrl,
+        untested: t.mcp.untested
+      };
+      return {
+        id: preset.id,
+        name: text.name,
+        description: text.description,
+        envKey,
+        envKeys,
+        guideUrl: guide.url,
+        guideLabel: guide.label,
+        guideActionLabel: mcpGuideActionLabel(preset, language),
+        auth: preset.auth,
+        status,
+        statusText: statusMap[status],
+        hint: server?.warnings?.[0] || (envKey ? text.envHint : text.description),
+        injectable: Boolean(server?.injectable),
+        warnings: server?.warnings || [],
+        command: server ? [server.command, ...server.args].filter(Boolean).join(" ") : preset.command
+      };
+    });
+    for (const server of mcpTestResult?.servers || []) {
+      if (selectedMcpPresets.some((preset) => preset.id === server.id)) continue;
+      const status: McpAdapterRow["status"] = server.status || "untested";
+      const statusMap: Record<McpAdapterRow["status"], string> = {
+        ready: t.mcp.ready,
+        "needs-auth": t.mcp.needsAuth,
+        "needs-config": t.mcp.needsConfig,
+        "command-missing": t.mcp.commandMissing,
+        "invalid-url": t.mcp.invalidUrl,
+        untested: t.mcp.untested
+      };
+      rows.push({
+        id: server.id,
+        name: server.id,
+        description: server.url ? server.url : [server.command, ...server.args].filter(Boolean).join(" "),
+        envKey: server.missingEnv?.[0] || "",
+        envKeys: server.missingEnv || [],
+        guideUrl: "",
+        guideLabel: "",
+        guideActionLabel: t.mcp.openGuide,
+        auth: "Connection",
+        status,
+        statusText: statusMap[status],
+        hint: server.warnings?.[0] || "",
+        injectable: Boolean(server.injectable),
+        warnings: server.warnings || [],
+        command: server.url || [server.command, ...server.args].filter(Boolean).join(" ")
+      });
+    }
+    return rows;
+  }, [language, mcpTestResult, selectedMcpPresets, t]);
+  const mcpSetupRows = useMemo(() => mcpAdapterRows, [mcpAdapterRows]);
+  const mcpInjectableCount = mcpAdapterRows.filter((row) => row.injectable).length;
+  const mcpRuntimeReady = settings.mcpEnabled && mcpInjectableCount > 0;
 
   const saveSettings = useCallback(async () => {
     if (apiKey.trim()) {
@@ -2402,6 +2882,7 @@ function App() {
 
       applyConversationStore(nextStore);
       activeSessionIdRef.current = nextSession.id;
+      setExpandedProjectIds(() => new Set([projectIdFromWorkspace(nextSession.workspacePath)]));
       setMessages(nextSession.messages.length ? nextSession.messages : [createNewConversationMessage(language)]);
       renderTerminalForSession(nextSession.id);
       setAgentPrompt("");
@@ -2561,12 +3042,19 @@ function App() {
     }));
   }, []);
 
-  const launch = useCallback(async (action?: LaunchAction, promptOverride?: string, captureSessionId?: string, replyMessageId?: string) => {
+  const launch = useCallback(async (
+    action?: LaunchAction,
+    promptOverride?: string,
+    captureSessionId?: string,
+    replyMessageId?: string,
+    launchOverrides: Partial<DesktopSettings> = {}
+  ) => {
     fitTerminal();
     const launchAction = action || settings.launchAction;
     const prompt = (promptOverride ?? agentPrompt).trim();
     const nextSettings = normalizeSettings({
       ...settings,
+      ...launchOverrides,
       launchAction
     });
     const runtimeSettings = {
@@ -2601,8 +3089,9 @@ function App() {
       if (!keyResult.ok) {
         runCaptureRef.current = null;
         terminalRunSessionIdRef.current = "";
-        setStatus({ type: "error", message: keyResult.error || t.settings.apiKeySaveFailed });
-        return;
+        const error = keyResult.error || t.settings.apiKeySaveFailed;
+        setStatus({ type: "error", message: error });
+        return { ok: false, error };
       }
     }
     setStatus({ type: "launching" });
@@ -2622,26 +3111,25 @@ function App() {
     }
     setRunning(Boolean(result.ok));
     setStatus(result.ok ? { type: "running", pid: result.pid } : { type: "error", message: result.error || t.status.launchFailed });
+    return result;
   }, [agentPrompt, apiKey, desktop, fitTerminal, renderTerminalForSession, settings, t]);
 
   const stop = useCallback(async () => {
-    await desktop.stopTerminal();
-    setRunning(false);
-    terminalRunSessionIdRef.current = "";
+    let cancelledRuntimeTurn = false;
+    if (activeSessionIdRef.current) {
+      const result = await desktop.cancelRuntimeTurn({ conversationId: activeSessionIdRef.current });
+      if (result.snapshot) {
+        setRuntimeOrchestratorSnapshot(result.snapshot);
+      }
+      cancelledRuntimeTurn = result.cancelled > 0;
+    }
+    if (!cancelledRuntimeTurn && running) {
+      await desktop.stopTerminal();
+      setRunning(false);
+      terminalRunSessionIdRef.current = "";
+    }
     setStatus({ type: "stopped" });
-  }, [desktop]);
-
-  const toggleProcessStream = useCallback(() => {
-    const nextEnabled = !processStreamEnabled;
-    updateSetting("harnessEnabled", nextEnabled);
-    setMainView("chat");
-    if (!nextEnabled && running) {
-      void stop();
-    }
-    if (nextEnabled) {
-      window.requestAnimationFrame(fitTerminal);
-    }
-  }, [fitTerminal, processStreamEnabled, running, stop, updateSetting]);
+  }, [desktop, running]);
 
   const toggleSkill = useCallback((id: string) => {
     setSettings((current) => {
@@ -2666,6 +3154,41 @@ function App() {
       return { ...current, enabledMcpServers: Array.from(enabled) };
     });
   }, []);
+
+  const configureEnvKey = useCallback((presetId: string, key: string) => {
+    setMcpSecretTarget({ presetId, key });
+    setMcpSecretValue("");
+  }, []);
+
+  const selectMcpForSetup = useCallback(async (preset: McpPreset) => {
+    const text = getMcpText(preset, language);
+    const envKeys = mcpEnvKeysFromHint(text.envHint);
+    const nextSettings = normalizeSettings({
+      ...settings,
+      mcpEnabled: true,
+      enabledMcpServers: Array.from(new Set([...(settings.enabledMcpServers || []), preset.id]))
+    });
+    setSettings(nextSettings);
+    const savedSettings = await desktop.saveSettings(nextSettings);
+    setSettings(savedSettings);
+    setMcpTestResult(null);
+    if (envKeys.length > 0) {
+      configureEnvKey(preset.id, envKeys[0]);
+    } else {
+      setMcpSecretTarget(null);
+      setMcpSecretValue("");
+      setTemplateMessage(t.mcp.selectedNoAuth(text.name));
+    }
+  }, [configureEnvKey, desktop, language, settings, t]);
+
+  const openMcpGuide = useCallback(async (preset: McpPreset) => {
+    const guide = mcpGuideForPreset(preset, language);
+    if (!guide.url) return;
+    const result = await desktop.openExternal(guide.url);
+    if (!result.ok) {
+      setTemplateMessage(result.error || t.mcp.configFailed);
+    }
+  }, [desktop, language, t]);
 
   const createSkill = useCallback(async () => {
     const result = await desktop.createSkillTemplate({
@@ -2783,16 +3306,60 @@ function App() {
     }
   }, [desktop, settings, t]);
 
+  const saveMcpEnvSecret = useCallback(async () => {
+    const key = mcpSecretKey.trim();
+    const value = mcpSecretValue.trim();
+    const targetPresetId = mcpSecretTarget?.presetId || "";
+    if (!key || !value) {
+      setTemplateMessage(t.mcp.secretFailed);
+      return;
+    }
+    setMcpSecretSaving(true);
+    try {
+      const result = await desktop.saveMcpEnvSecret({ name: key, value });
+      if (!result.ok || !result.key) {
+        setTemplateMessage(result.error || t.mcp.secretFailed);
+        return;
+      }
+      const nextSettings = targetPresetId
+        ? normalizeSettings({
+          ...settings,
+          mcpEnabled: true,
+          enabledMcpServers: Array.from(new Set([...(settings.enabledMcpServers || []), targetPresetId]))
+        })
+        : settings;
+      const savedSettings = targetPresetId ? await desktop.saveSettings(nextSettings) : settings;
+      setSettings(savedSettings);
+      setMcpSecretTarget(null);
+      setMcpSecretValue("");
+      const nextTest = await desktop.testMcpServers({ settings: savedSettings });
+      setMcpTestResult(nextTest);
+      setTemplateMessage(targetPresetId ? t.mcp.secretSavedAndEnabled(result.key) : t.mcp.secretSaved(result.key));
+    } finally {
+      setMcpSecretSaving(false);
+    }
+  }, [desktop, mcpSecretKey, mcpSecretTarget?.presetId, mcpSecretValue, settings, t]);
+
   const sendPrompt = useCallback(async () => {
     const prompt = agentPrompt.trim();
     if (!prompt) return;
+    if (activeSessionBusy) return;
+    const currentSession = findConversationSession(conversationStore, conversationStore.activeSessionId)
+      || createConversationSession(settings.workspacePath, language, [createWelcomeMessage(language)]);
+    const targetSessionId = currentSession.id;
 
-    const assistantContent = agentMode === "plan"
+    const permissionContent = permissionMode === "plan"
       ? t.promptResult.planContent
-      : agentMode === "yolo"
+      : permissionMode === "yolo"
         ? t.promptResult.yoloContent
         : t.promptResult.execContent;
-    const launchAction: LaunchAction = agentMode === "plan" ? "plan" : agentMode === "yolo" ? "yolo" : "exec";
+    const assistantTitle = permissionMode === "plan"
+      ? t.promptResult.planTitle
+      : permissionMode === "yolo"
+        ? t.promptResult.yoloTitle
+        : t.promptResult.harnessTitle;
+    const assistantContent = permissionContent;
+    const launchAction: LaunchAction = permissionMode === "plan" ? "plan" : permissionMode === "yolo" ? "yolo" : "exec";
     const replyMessageId = createId();
 
     const nextMessages: ChatMessage[] = [
@@ -2801,13 +3368,13 @@ function App() {
       {
         id: replyMessageId,
         role: "assistant",
+        title: assistantTitle,
         content: assistantContent
       }
     ];
     setMessages(nextMessages);
     commitConversationStore((current) => {
-      const session = findConversationSession(current, current.activeSessionId)
-        || createConversationSession(settings.workspacePath, language, [createWelcomeMessage(language)]);
+      const session = findConversationSession(current, targetSessionId) || currentSession;
       const isUntitled = !session.title || session.title === uiCopy[language].history.untitled;
       return upsertConversationSession(current, {
         ...session,
@@ -2818,8 +3385,72 @@ function App() {
       }, language);
     });
     setAgentPrompt("");
-    await launch(launchAction, prompt, conversationStore.activeSessionId, replyMessageId);
-  }, [agentMode, agentPrompt, commitConversationStore, conversationStore.activeSessionId, language, launch, messages, settings.workspacePath, t]);
+    setStatus({ type: "launching" });
+    terminalOutputBySessionRef.current[targetSessionId] = "";
+    if (activeSessionIdRef.current === targetSessionId) {
+      renderTerminalForSession(targetSessionId);
+    }
+    const runtimeSettings = normalizeSettings({
+      ...settings,
+      launchAction,
+      processStreamEnabled,
+      model: selectedModelApiName
+    });
+    if (runtimeSettings.rememberWorkspace) {
+      await desktop.saveSettings(runtimeSettings);
+    }
+    const launchApiKey = apiKey.trim();
+    if (launchApiKey) {
+      const keyResult = await desktop.saveApiKey({ provider: runtimeSettings.provider, apiKey: launchApiKey });
+      if (!keyResult.ok) {
+        const message: ChatMessage = {
+          id: replyMessageId,
+          role: "assistant",
+          title: t.runSummary.title,
+          content: keyResult.error || t.settings.apiKeySaveFailed
+        };
+        commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          messages: session.messages.map((candidate) => candidate.id === replyMessageId ? message : candidate)
+        })));
+        setMessages((current) => current.map((candidate) => candidate.id === replyMessageId ? message : candidate));
+        setStatus({ type: "error", message: keyResult.error || t.settings.apiKeySaveFailed });
+        return;
+      }
+    }
+    const result = await desktop.startRuntimeTurn({
+      conversationId: targetSessionId,
+      workspacePath: settings.workspacePath,
+      prompt,
+      model: selectedModelApiName,
+      replyMessageId,
+      mode: launchAction,
+      settings: runtimeSettings
+    });
+    if (result.runtime) {
+      setRuntime(result.runtime);
+    }
+    if (result.snapshot) {
+      setRuntimeOrchestratorSnapshot(result.snapshot);
+    }
+    if (result && !result.ok) {
+      const message: ChatMessage = {
+        id: replyMessageId,
+        role: "assistant",
+        title: t.runSummary.title,
+        content: result.error || t.status.launchFailed
+      };
+      commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
+        ...session,
+        updatedAt: new Date().toISOString(),
+        messages: session.messages.map((candidate) => candidate.id === replyMessageId ? message : candidate)
+      })));
+      setMessages((current) => current.map((candidate) => candidate.id === replyMessageId ? message : candidate));
+      setStatus({ type: "error", message: result.error || t.status.launchFailed });
+      return;
+    }
+  }, [activeSessionBusy, agentPrompt, apiKey, commitConversationStore, conversationStore, desktop, language, messages, permissionMode, processStreamEnabled, renderTerminalForSession, selectedModelApiName, settings, t]);
 
   const handleComposerKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (!shouldSubmitComposerShortcut(event)) return;
@@ -2832,6 +3463,7 @@ function App() {
     const session = createConversationSession(workspacePath, language, nextMessages);
     applyConversationStore(upsertConversationSession(conversationStore, session, language));
     activeSessionIdRef.current = session.id;
+    setExpandedProjectIds(() => new Set([session.projectId]));
     renderTerminalForSession(session.id);
     setSettings((current) => ({ ...current, workspacePath }));
     setMessages(nextMessages);
@@ -2846,24 +3478,32 @@ function App() {
 
   const selectProject = useCallback((project: ConversationProject) => {
     if (!project.workspacePath.trim()) return;
-    const session = project.sessions[0];
-    applyConversationStore({
-      ...conversationStore,
-      activeSessionId: session?.id || conversationStore.activeSessionId
+    const projectIsExpanded = expandedProjectIds.has(project.id);
+    setExpandedProjectIds((current) => {
+      const projectIsExpanded = current.has(project.id);
+      return projectIsExpanded ? new Set<string>() : new Set([project.id]);
     });
-    activeSessionIdRef.current = session?.id || conversationStore.activeSessionId;
+    const session = project.sessions[0];
     setSettings((current) => ({ ...current, workspacePath: project.workspacePath }));
-    setMessages(session?.messages.length ? session.messages : [createNewConversationMessage(language)]);
-    renderTerminalForSession(session?.id);
+    if (!projectIsExpanded && session) {
+      applyConversationStore({
+        ...conversationStore,
+        activeSessionId: session.id
+      });
+      activeSessionIdRef.current = session.id;
+      setMessages(session.messages.length ? session.messages : [createNewConversationMessage(language)]);
+      renderTerminalForSession(session.id);
+    }
     setAgentPrompt("");
     setMainView("chat");
-  }, [applyConversationStore, conversationStore, language, renderTerminalForSession]);
+  }, [applyConversationStore, conversationStore, expandedProjectIds, language, renderTerminalForSession]);
 
   const selectConversation = useCallback((sessionId: string) => {
     const session = findConversationSession(conversationStore, sessionId);
     if (!session) return;
     applyConversationStore({ ...conversationStore, activeSessionId: sessionId });
     activeSessionIdRef.current = session.id;
+    setExpandedProjectIds(() => new Set([session.projectId]));
     setMessages(session.messages.length ? session.messages : [createWelcomeMessage(language)]);
     renderTerminalForSession(session.id);
     setAgentPrompt("");
@@ -2879,6 +3519,7 @@ function App() {
     delete terminalOutputBySessionRef.current[sessionId];
     applyConversationStore(nextStore);
     activeSessionIdRef.current = nextSession?.id || "";
+    setExpandedProjectIds(() => nextSession?.projectId ? new Set([nextSession.projectId]) : new Set<string>());
     setMessages(nextSession?.messages.length ? nextSession.messages : [createWelcomeMessage(language)]);
     renderTerminalForSession(nextSession?.id);
     if (nextSession?.workspacePath) {
@@ -3001,6 +3642,25 @@ function App() {
     }
   }, [applyGitResult, desktop, gitRemoteUrl, settings.workspacePath, t]);
 
+  const switchGitBranch = useCallback(async (branchName: string) => {
+    if (!branchName || !gitStatus?.isRepo) return;
+    if (gitStatus.hasChanges) {
+      setGitMessage(t.git.dirtyBranchBlocked);
+      setGitMessageKind("error");
+      return;
+    }
+    setGitBusy(true);
+    try {
+      const result = await desktop.switchGitBranch({
+        workspacePath: settings.workspacePath,
+        branchName
+      });
+      applyGitResult(result, t.git.switchBranchOk);
+    } finally {
+      setGitBusy(false);
+    }
+  }, [applyGitResult, desktop, gitStatus?.hasChanges, gitStatus?.isRepo, settings.workspacePath, t]);
+
   const runGitRepositoryAction = useCallback(async (action: "fetch" | "pull" | "push") => {
     setGitBusy(true);
     try {
@@ -3070,23 +3730,77 @@ function App() {
     setInspectorPanel((current) => current === panel ? null : panel);
   }, []);
 
-  const messageListClassName = mainView === "tools" || mainView === "tasks" || mainView === "agents" ? "message-list tool-message-list" : "message-list";
-  const conversationLayoutClassName = processStreamEnabled ? "conversation-layout" : "conversation-layout process-panel-collapsed";
-  const terminalCardClassName = mainView === "terminal"
-    ? "terminal-card terminal-expanded"
-    : mainView === "tools" || mainView === "tasks" || mainView === "agents"
-      ? "terminal-card terminal-hidden"
-      : "terminal-card process-panel";
-  const runtimeEventList = runtimeSnapshot.events.length > 0 ? runtimeSnapshot.events : runtimeEvents;
+  const messageListClassName = mainView === "tools" || mainView === "tasks" ? "message-list tool-message-list" : "message-list";
+  const conversationLayoutClassName = "conversation-layout conversation-layout-with-stream";
+  const terminalCardClassName = mainView === "terminal" ? "terminal-card terminal-expanded" : "terminal-card stream-output-card";
+  const parentRuntimeTurns = runtimeOrchestratorSnapshot.turns
+    .filter((turn) => turn.status === "queued" || turn.status === "running" || turn.status === "cancelling");
+  const visibleRuntimeAgents = runtimeSnapshot.agents;
+  const activeRuntimeCount = parentRuntimeTurns.length + runtimeSnapshot.counts.running;
+  const parentRuntimeLabel = language === "zh" ? "当前运行" : "Current Run";
+  const childAgentLabel = language === "zh" ? "子 Agent" : "Child Agents";
+  const waitingChildAgentText = language === "zh" ? "等待上游子 Agent 信号" : "Waiting for upstream child-agent signals";
+  const agentRuntimeBoard = (
+    <section className="agent-runtime-board" aria-label={t.runtimeAgents.title}>
+      <div className="agent-runtime-board-main">
+        <div className={activeRuntimeCount > 0 ? "agent-runtime-count active" : "agent-runtime-count"}>
+          {activeRuntimeCount > 0 ? <RunningActivityMark compact /> : <LoaderCircle size={16} aria-hidden />}
+          <strong>{activeRuntimeCount}</strong>
+        </div>
+        <div>
+          <span>{t.runtimeAgents.title}</span>
+          <p>{activeRuntimeCount > 0
+            ? t.runtimeAgents.runningCount(activeRuntimeCount)
+            : visibleRuntimeAgents.length > 0
+              ? t.runtimeAgents.trackedCount(visibleRuntimeAgents.length)
+              : t.runtimeAgents.noAgents}</p>
+        </div>
+      </div>
+      {parentRuntimeTurns.length > 0 ? (
+        <div className="agent-runtime-active-list">
+          <div className="agent-runtime-section-title">{parentRuntimeLabel}</div>
+          {parentRuntimeTurns.map((turn) => (
+            <article key={turn.turnId}>
+              <TerminalSquare size={14} aria-hidden />
+              <span>{turn.prompt || turn.turnId}</span>
+              <b>{turn.status === "queued"
+                ? t.runtimeAgents.statuses.queued
+                : turn.status === "cancelling"
+                  ? t.runtimeAgents.statuses.cancelled
+                  : t.runtimeAgents.statuses.running}</b>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      <div className="agent-runtime-active-list">
+        <div className="agent-runtime-section-title">{childAgentLabel}</div>
+        {visibleRuntimeAgents.length > 0 ? (
+          visibleRuntimeAgents.map((agent) => (
+            <article key={agent.id}>
+              <Bot size={14} aria-hidden />
+              <span>{agent.name}</span>
+              <b>{runtimeStatusText(agent.status, language)}</b>
+            </article>
+          ))
+        ) : (
+          <p className="agent-runtime-empty">{parentRuntimeTurns.length > 0 ? waitingChildAgentText : t.runtimeAgents.noAgents}</p>
+        )}
+      </div>
+    </section>
+  );
   const terminalPanel = (
     <section className={terminalCardClassName}>
       <div className="terminal-toolbar">
         <div className="status-line">
           <span className={`dot ${running ? "live" : ""}`} />
-          <span>{statusText}</span>
+          <span className="terminal-title">
+            <TerminalSquare size={15} aria-hidden />
+            {t.terminal.streamTitle}
+          </span>
+          <small>{statusText}</small>
         </div>
-        <div className="quick-row process-actions">
-          {running ? (
+        <div className="quick-row terminal-actions">
+          {activeSessionBusy ? (
             <button type="button" title={t.terminal.stop} onClick={stop}>
               <Square size={14} aria-hidden />
             </button>
@@ -3107,83 +3821,7 @@ function App() {
         </div>
       </div>
       <div ref={terminalHostRef} className="terminal-host" />
-    </section>
-  );
-
-  const agentsPanel = (
-    <section className="agents-panel">
-      <div className="tool-section-head">
-        <div>
-          <h3>{t.runtimeAgents.title}</h3>
-          <p>{t.runtimeAgents.subtitle}</p>
-        </div>
-        <span className={`status-chip runtime-${runtimeSnapshot.status}`}>
-          {runtimeStatusText(runtimeSnapshot.status, language)}
-        </span>
-      </div>
-      <div className="runtime-summary-grid">
-        <article>
-          <Activity size={18} aria-hidden />
-          <span>{t.runtimeAgents.status}</span>
-          <strong>{runtimeStatusText(runtimeSnapshot.status, language)}</strong>
-        </article>
-        <article>
-          <Bot size={18} aria-hidden />
-          <span>Agents</span>
-          <strong>{runtimeSnapshot.counts.total}</strong>
-        </article>
-        <article>
-          <Server size={18} aria-hidden />
-          <span>{t.runtimeAgents.source}</span>
-          <strong>{runtimeSnapshot.source}</strong>
-        </article>
-      </div>
-      <div className="runtime-meta-row">
-        <span>{t.runtimeAgents.mode}: <strong>{runtimeSnapshot.mode || "-"}</strong></span>
-        <span>{t.runtimeAgents.started}: <strong>{formatSessionTime(runtimeSnapshot.startedAt, language) || "-"}</strong></span>
-        <span>{t.runtimeAgents.workspace}: <strong>{projectNameFromWorkspace(runtimeSnapshot.workspacePath, language)}</strong></span>
-      </div>
-      <div className="runtime-counts">
-        {t.runtimeAgents.counts(runtimeSnapshot.counts.running, runtimeSnapshot.counts.completed, runtimeSnapshot.counts.failed)}
-      </div>
-      <div className="agent-list">
-        {runtimeSnapshot.agents.length === 0 ? (
-          <p className="history-empty">{t.runtimeAgents.noAgents}</p>
-        ) : runtimeSnapshot.agents.map((agent) => (
-          <article key={agent.id} className="agent-runtime-row">
-            <div className="agent-runtime-main">
-              <span className="preset-icon"><Bot size={16} aria-hidden /></span>
-              <div>
-                <strong>{agent.name}</strong>
-                <small>{agent.summary || agent.id}</small>
-              </div>
-            </div>
-            <span className={`status-chip agent-${agent.status}`}>
-              {runtimeStatusText(agent.status, language)}
-            </span>
-          </article>
-        ))}
-      </div>
-      <section className="runtime-events">
-        <div className="tool-section-head compact">
-          <div>
-            <h3>{t.runtimeAgents.recentEvents}</h3>
-          </div>
-        </div>
-        {runtimeEventList.length === 0 ? (
-          <p className="history-empty">{t.runtimeAgents.noEvents}</p>
-        ) : (
-          <ol>
-            {runtimeEventList.slice(-8).reverse().map((event) => (
-              <li key={event.id}>
-                <span>{formatSessionTime(event.at, language)}</span>
-                <strong>{event.label}</strong>
-                {event.detail ? <small>{event.detail}</small> : null}
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
+      {agentRuntimeBoard}
     </section>
   );
 
@@ -3276,119 +3914,195 @@ function App() {
   );
 
   const mcpToolPage = (
-    <section className="tool-editor-page">
-      <div className="tool-help">
-        <BookOpen size={17} aria-hidden />
-        <div>
-          <strong>{t.mcp.helpTitle}</strong>
-          <p>{t.mcp.helpBody}</p>
+    <section className="tool-editor-page mcp-config-page">
+      <section className="mcp-setup-panel">
+        <div className="template-editor-head">
+          <div>
+            <strong>{t.mcp.setupTitle}</strong>
+            <small>{t.mcp.setupDesc}</small>
+          </div>
+          <button type="button" className="secondary" onClick={testMcpServers} disabled={mcpTesting}>
+            <Activity size={16} aria-hidden />
+            {mcpTesting ? t.mcp.testing : t.mcp.test}
+          </button>
         </div>
-      </div>
 
-	      <section className={mcpRuntimeReady ? "runtime-toggle-card enabled" : "runtime-toggle-card"}>
-	        <label className="check-row">
-	          <input
-	            type="checkbox"
-	            checked={settings.mcpEnabled}
+        <div className="mcp-setup-search">
+          <input
+            ref={mcpSearchInputRef}
+            value={mcpSearch}
+            onChange={(event) => setMcpSearch(event.target.value)}
+            placeholder={t.mcp.searchPlaceholder}
+            spellCheck={false}
+          />
+        </div>
+
+        <div className="category-row">
+          {mcpCategories.map((category) => (
+            <button
+              type="button"
+              key={category}
+              className={mcpCategory === category ? "active" : ""}
+              onClick={() => setMcpCategory(category)}
+            >
+              {t.category[category]}
+            </button>
+          ))}
+        </div>
+
+        <div className="mcp-summary-row">
+          <span>{t.mcp.summaryEnabled(enabledMcpCount)}</span>
+          <span>{t.mcp.injectable}: {mcpInjectableCount}</span>
+          <span>{t.mcp.summaryVisible(filteredMcpPresets.length)}</span>
+          <span>{t.mcp.summaryInstalled(mcpPresets.length)}</span>
+        </div>
+
+        {filteredMcpPresets.length === 0 ? (
+          <div className="mcp-empty-setup">
+            <Plug size={18} aria-hidden />
+            <div>
+              <strong>{t.mcp.setupEmptyTitle}</strong>
+              <small>{t.mcp.setupEmptyBody}</small>
+            </div>
+            <span className="status-chip">{t.mcp.noMatches}</span>
+          </div>
+        ) : (
+          <div className="mcp-setup-grid">
+            {filteredMcpPresets.map((preset) => {
+              const selected = settings.enabledMcpServers.includes(preset.id);
+              const Icon = iconForMcp(preset.id);
+              const presetText = getMcpText(preset, language);
+              const setupRow = mcpSetupRows.find((row) => row.id === preset.id);
+              const guide = mcpGuideForPreset(preset, language);
+              const envKeys = setupRow?.envKeys.length ? setupRow.envKeys : mcpEnvKeysFromHint(presetText.envHint);
+              const activeSecret = mcpSecretTarget?.presetId === preset.id;
+              const cardClassName = selected
+                ? setupRow?.injectable ? "mcp-setup-card ready" : "mcp-setup-card blocked"
+                : "mcp-setup-card";
+              const statusText = selected
+                ? setupRow?.injectable ? t.mcp.injectable : setupRow?.statusText || t.mcp.untested
+                : t.mcp.notSelected;
+              return (
+                <article key={preset.id} className={cardClassName}>
+                  <button type="button" className="mcp-catalog-main" onClick={() => selectMcpForSetup(preset)}>
+                    <span className="preset-icon"><Icon size={18} aria-hidden /></span>
+                    <span>
+                      <strong>{presetText.name}</strong>
+                      <small>{presetText.description}</small>
+                    </span>
+                    <span className={selected ? setupRow?.injectable ? "status-chip enabled" : "status-chip warning" : "status-chip"}>
+                      {statusText}
+                    </span>
+                  </button>
+                  <p>{selected && setupRow?.hint ? setupRow.hint : presetText.envHint}</p>
+                  <code>{setupRow?.command || preset.command}</code>
+                  <div className="mcp-setup-actions">
+                    {envKeys.length > 0 ? envKeys.map((key) => (
+                      <button
+                        type="button"
+                        key={key}
+                        className={activeSecret && mcpSecretKey === key ? "primary" : "secondary"}
+                        onClick={() => {
+                          if (!selected) void selectMcpForSetup(preset);
+                          configureEnvKey(preset.id, key);
+                        }}
+                      >
+                        <KeyRound size={15} aria-hidden />
+                        {mcpSetupButtonLabel(preset.auth, key, language)}
+                      </button>
+                    )) : (
+                      <button type="button" className={selected ? "secondary" : "primary"} onClick={() => selectMcpForSetup(preset)}>
+                        <ShieldCheck size={15} aria-hidden />
+                        {selected ? t.mcp.noAuthRequired : t.mcp.chooseService}
+                      </button>
+                    )}
+                    {guide.url ? (
+                      <button type="button" className="secondary" onClick={() => openMcpGuide(preset)}>
+                        <Link2 size={15} aria-hidden />
+                        {mcpGuideActionLabel(preset, language) || t.mcp.openGuide}
+                      </button>
+                    ) : null}
+                  </div>
+                  {activeSecret ? (
+                    <div className="mcp-secret-form mcp-secret-inline">
+                      <label>
+                        {t.mcp.configureEnvKey(mcpSecretKey)}
+                        <input
+                          value={mcpSecretValue}
+                          onChange={(event) => setMcpSecretValue(event.target.value)}
+                          placeholder={mcpSecretPlaceholderForKey(mcpSecretKey, language)}
+                          type="password"
+                          spellCheck={false}
+                        />
+                      </label>
+                      <button type="button" className="primary" onClick={saveMcpEnvSecret} disabled={mcpSecretSaving || !mcpSecretValue.trim()}>
+                        <ShieldCheck size={16} aria-hidden />
+                        {mcpSecretSaving ? t.mcp.testing : t.mcp.saveSecret}
+                      </button>
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className={mcpRuntimeReady ? "runtime-toggle-card enabled" : "runtime-toggle-card"}>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={settings.mcpEnabled}
             onChange={(event) => updateSetting("mcpEnabled", event.target.checked)}
           />
           <span>{t.mcp.enableRuntime}</span>
         </label>
-	        <small>{settings.mcpEnabled ? (mcpRuntimeReady ? t.mcp.runtimeOn : t.mcp.runtimePending) : t.mcp.runtimeOff}</small>
-	        <p>{t.mcp.runtimeHint}</p>
-	      </section>
+        <small>{settings.mcpEnabled ? (mcpRuntimeReady ? t.mcp.runtimeOn : t.mcp.runtimeBlocked) : t.mcp.runtimeOff}</small>
+        <p>{t.mcp.runtimeHint}</p>
+      </section>
 
-	      <section className="template-editor custom-mcp-builder">
-	        <div className="template-editor-head">
-	          <div>
-	            <strong>{t.mcp.customTitle}</strong>
-	            <small>{t.mcp.customHint}</small>
-	          </div>
-	          <span className="status-chip">{t.mcp.sourceCustom}</span>
-	        </div>
-	        <div className="custom-mcp-grid">
-	          <label>
-	            {t.mcp.customId}
-	            <input
-	              value={customMcpId}
-	              onChange={(event) => setCustomMcpId(event.target.value)}
-	              placeholder={t.mcp.customIdPlaceholder}
-	              spellCheck={false}
-	            />
-	          </label>
-	          <label>
-	            {t.mcp.customCommand}
-	            <input
-	              value={customMcpCommand}
-	              onChange={(event) => setCustomMcpCommand(event.target.value)}
-	              placeholder={t.mcp.customCommandPlaceholder}
-	              spellCheck={false}
-	            />
-	          </label>
-	          <label className="wide-field">
-	            {t.mcp.customUrl}
-	            <input
-	              value={customMcpUrl}
-	              onChange={(event) => setCustomMcpUrl(event.target.value)}
-	              placeholder={t.mcp.customUrlPlaceholder}
-	              spellCheck={false}
-	            />
-	          </label>
-	          <label className="wide-field">
-	            {t.mcp.customArgs}
-	            <textarea
-	              value={customMcpArgs}
-	              onChange={(event) => setCustomMcpArgs(event.target.value)}
-	              placeholder={t.mcp.customArgsPlaceholder}
-	              spellCheck={false}
-	            />
-	          </label>
-	          <label className="wide-field">
-	            {t.mcp.customEnv}
-	            <textarea
-	              value={customMcpEnv}
-	              onChange={(event) => setCustomMcpEnv(event.target.value)}
-	              placeholder={t.mcp.customEnvPlaceholder}
-	              spellCheck={false}
-	            />
-	          </label>
-	        </div>
-	        <button type="button" className="primary wide" onClick={addCustomMcpServer}>
-	          <Plus size={16} aria-hidden />
-	          {t.mcp.addCustom}
-	        </button>
-	      </section>
-
-	      <input
-	        value={mcpSearch}
-        onChange={(event) => setMcpSearch(event.target.value)}
-        placeholder={t.mcp.searchPlaceholder}
-        spellCheck={false}
-      />
-
-      <div className="category-row">
-        {mcpCategories.map((category) => (
-          <button
-            type="button"
-            key={category}
-            className={mcpCategory === category ? "active" : ""}
-            onClick={() => setMcpCategory(category)}
-          >
-            {t.category[category]}
-          </button>
-        ))}
-      </div>
-
-      <div className="mcp-summary-row">
-        <span>{t.mcp.summaryEnabled(enabledMcpCount)}</span>
-        <span>{t.mcp.summaryVisible(filteredMcpPresets.length)}</span>
-        <span>{t.mcp.summaryInstalled(mcpPresets.length)}</span>
-      </div>
-
-      <button type="button" className="secondary wide" onClick={testMcpServers} disabled={mcpTesting}>
-        <Activity size={16} aria-hidden />
-        {mcpTesting ? t.mcp.testing : t.mcp.test}
-      </button>
+      {settings.enabledMcpServers.length > 0 || mcpAdapterRows.length > 0 ? (
+        <section className="mcp-adapter-panel">
+          <div className="template-editor-head">
+            <div>
+              <strong>{t.mcp.adapterTitle}</strong>
+              <small>{t.mcp.adapterDesc}</small>
+            </div>
+            <button type="button" className="secondary" onClick={testMcpServers} disabled={mcpTesting}>
+              <Activity size={16} aria-hidden />
+              {mcpTesting ? t.mcp.testing : t.mcp.test}
+            </button>
+          </div>
+          <div className="mcp-adapter-list">
+            {mcpAdapterRows.map((row) => (
+              <article key={row.id} className={row.injectable ? "mcp-adapter-row ready" : "mcp-adapter-row blocked"}>
+                <div>
+                  <strong>{row.name}</strong>
+                  <code>{row.command}</code>
+                  <small>{row.hint}</small>
+                </div>
+                <div className="mcp-adapter-actions">
+                  <span className={row.injectable ? "status-chip enabled" : "status-chip warning"}>{row.statusText}</span>
+                  <span className={row.injectable ? "status-chip enabled" : "status-chip"}>{row.injectable ? t.mcp.injectable : t.mcp.notInjected}</span>
+                  {row.guideUrl ? (
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => {
+                        const preset = mcpPresets.find((candidate) => candidate.id === row.id);
+                        if (preset) void openMcpGuide(preset);
+                      }}
+                    >
+                      <Link2 size={15} aria-hidden />
+                      {t.mcp.guide}
+                    </button>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {mcpTestResult ? (
         <section className="mcp-test-list">
@@ -3400,11 +4114,11 @@ function App() {
               <div key={server.id} className="mcp-test-row">
                 <div>
                   <strong>{serverName}</strong>
-                  <span className={server.ok ? "status-chip enabled" : "status-chip warning"}>
-                    {server.ok ? t.mcp.testOk : t.mcp.testFailed}
+                  <span className={server.injectable ? "status-chip enabled" : "status-chip warning"}>
+                    {server.injectable ? t.mcp.injectable : t.mcp.notInjected}
                   </span>
                 </div>
-	                <code>{server.url || [server.command, ...server.args].filter(Boolean).join(" ")}</code>
+                <code>{server.url || [server.command, ...server.args].filter(Boolean).join(" ")}</code>
                 {server.warnings.length > 0 ? (
                   <ul>
                     {server.warnings.map((warning) => <li key={warning}>{warning}</li>)}
@@ -3416,33 +4130,67 @@ function App() {
         </section>
       ) : null}
 
-	      {filteredMcpPresets.map((preset) => {
-	        const enabled = settings.enabledMcpServers.includes(preset.id);
-	        const Icon = iconForMcp(preset.id);
-	        const presetText = getMcpText(preset, language);
-	        return (
-          <button
-            type="button"
-            key={preset.id}
-            className={enabled ? `preset-card enabled ${preset.accent}` : `preset-card ${preset.accent}`}
-            onClick={() => toggleMcp(preset.id)}
-          >
-            <span className="preset-icon"><Icon size={18} aria-hidden /></span>
-            <span>
-              <strong>{presetText.name}</strong>
-              <small>{presetText.description}</small>
-              <code>{preset.command}</code>
-              <em>{presetText.envHint}</em>
-              <span className="preset-meta">
-                <b>{t.category[preset.category]}</b>
-                <b>{formatDownloads(preset.downloads, language)}</b>
-                <b>{t.safety[preset.safety]} {t.mcp.riskSuffix}</b>
-              </span>
-            </span>
-            <span className={enabled ? "switch on" : "switch"} />
-	          </button>
-	        );
-	      })}
+      <section className="template-editor custom-mcp-builder">
+        <div className="template-editor-head">
+          <div>
+            <strong>{t.mcp.customTitle}</strong>
+            <small>{t.mcp.customHint}</small>
+          </div>
+          <span className="status-chip">{t.mcp.sourceCustom}</span>
+        </div>
+        <div className="custom-mcp-grid">
+          <label>
+            {t.mcp.customId}
+            <input
+              value={customMcpId}
+              onChange={(event) => setCustomMcpId(event.target.value)}
+              placeholder={t.mcp.customIdPlaceholder}
+              spellCheck={false}
+            />
+          </label>
+          <label>
+            {t.mcp.customCommand}
+            <input
+              value={customMcpCommand}
+              onChange={(event) => setCustomMcpCommand(event.target.value)}
+              placeholder={t.mcp.customCommandPlaceholder}
+              spellCheck={false}
+            />
+          </label>
+          <label className="wide-field">
+            {t.mcp.customUrl}
+            <input
+              value={customMcpUrl}
+              onChange={(event) => setCustomMcpUrl(event.target.value)}
+              placeholder={t.mcp.customUrlPlaceholder}
+              spellCheck={false}
+            />
+          </label>
+          <label className="wide-field">
+            {t.mcp.customArgs}
+            <textarea
+              value={customMcpArgs}
+              onChange={(event) => setCustomMcpArgs(event.target.value)}
+              placeholder={t.mcp.customArgsPlaceholder}
+              spellCheck={false}
+            />
+          </label>
+          <label className="wide-field">
+            {t.mcp.customEnv}
+            <textarea
+              value={customMcpEnv}
+              onChange={(event) => setCustomMcpEnv(event.target.value)}
+              placeholder={t.mcp.customEnvPlaceholder}
+              spellCheck={false}
+            />
+          </label>
+        </div>
+        <button type="button" className="primary wide" onClick={addCustomMcpServer}>
+          <Plus size={16} aria-hidden />
+          {t.mcp.addCustom}
+        </button>
+      </section>
+
       {templateMessage ? <p className="template-message">{templateMessage}</p> : null}
       <div className="path-picker">
         <input
@@ -3642,83 +4390,114 @@ function App() {
           {t.sidebar.newChat}
         </button>
 
-        <nav className="history-tree" aria-label={t.sidebar.navLabel}>
-          {conversationStore.projects.length === 0 ? (
-            <p className="history-empty">{t.history.empty}</p>
-          ) : null}
-          {conversationStore.projects.map((project) => {
-            const projectIsSelected = projectIdFromWorkspace(project.workspacePath) === selectedProjectId
-              || project.sessions.some((session) => session.id === conversationStore.activeSessionId);
-            return (
-            <section key={project.id} className="project-group">
-              <div className={projectIsSelected ? "project-header active" : "project-header"} title={project.workspacePath || project.name}>
-                <button
-                  type="button"
-                  className="project-select-button"
-                  title={`${t.history.selectProject}: ${project.name}`}
-                  aria-label={`${t.history.selectProject}: ${project.name}`}
-                  onClick={() => selectProject(project)}
-                  disabled={!project.workspacePath.trim()}
+        <section className="history-scroll-shell">
+          <button
+            type="button"
+            className="history-scroll-button top"
+            title={historyScrollUpLabel}
+            aria-label={historyScrollUpLabel}
+            onClick={() => scrollHistory("up")}
+            disabled={!historyScrollState.canScrollUp}
+          >
+            <ChevronUp size={15} aria-hidden />
+          </button>
+          <nav
+            ref={historyScrollRef}
+            className="history-tree history-scroll-pane"
+            aria-label={t.sidebar.navLabel}
+            onScroll={updateHistoryScrollState}
+          >
+            {conversationStore.projects.length === 0 ? (
+              <p className="history-empty">{t.history.empty}</p>
+            ) : null}
+            {conversationStore.projects.map((project) => {
+              const projectIsSelected = projectIdFromWorkspace(project.workspacePath) === selectedProjectId
+                || project.sessions.some((session) => session.id === conversationStore.activeSessionId);
+              const projectIsExpanded = expandedProjectIds.has(project.id);
+              return (
+              <section key={project.id} className={projectIsExpanded ? "project-group expanded" : "project-group collapsed"}>
+                <div
+                  className={[
+                    "project-header",
+                    projectIsSelected ? "active" : "",
+                    projectIsExpanded ? "expanded" : ""
+                  ].filter(Boolean).join(" ")}
+                  title={project.workspacePath || project.name}
                 >
-                  <FolderOpen size={15} aria-hidden />
-                  <span>{project.name}</span>
-                  <small>{project.sessions.length}</small>
-                </button>
-                <button
-                  type="button"
-                  className="project-new-chat-button"
-                  title={t.history.newProjectSession}
-                  aria-label={t.history.newProjectSession}
-                  onClick={() => createProjectConversation(project.workspacePath)}
-                  disabled={!project.workspacePath.trim()}
-                >
-                  <Plus size={13} aria-hidden />
-                </button>
-              </div>
-              <div className="chat-list">
-                {project.sessions.map((session) => (
-                  <div
-                    key={session.id}
-                    className={session.id === conversationStore.activeSessionId ? "chat-list-item active" : "chat-list-item"}
+                  <button
+                    type="button"
+                    className="project-select-button"
+                    title={`${t.history.selectProject}: ${project.name}`}
+                    aria-label={`${t.history.selectProject}: ${project.name}`}
+                    aria-expanded={projectIsExpanded}
+                    onClick={() => selectProject(project)}
+                    disabled={!project.workspacePath.trim()}
                   >
-                    <button type="button" className="chat-list-main" onClick={() => selectConversation(session.id)}>
-                      <MessageSquare size={16} aria-hidden />
-                      <span>
-                        <b>{session.title || t.history.untitled}</b>
-                        <small>{formatSessionTime(session.updatedAt, language)}</small>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-delete-button"
-                      title={t.history.deleteSession}
-                      onClick={() => removeConversation(session.id)}
+                    <ChevronDown size={14} className="project-disclosure-icon" aria-hidden />
+                    <FolderOpen size={15} aria-hidden />
+                    <span>{project.name}</span>
+                    <small>{project.sessions.length}</small>
+                  </button>
+                  <button
+                    type="button"
+                    className="project-new-chat-button"
+                    title={t.history.newProjectSession}
+                    aria-label={t.history.newProjectSession}
+                    onClick={() => createProjectConversation(project.workspacePath)}
+                    disabled={!project.workspacePath.trim()}
+                  >
+                    <Plus size={13} aria-hidden />
+                  </button>
+                </div>
+                <div className="chat-list">
+                  {projectIsExpanded ? project.sessions.map((session) => (
+                    <div
+                      key={session.id}
+                      className={session.id === conversationStore.activeSessionId ? "chat-list-item active" : "chat-list-item"}
                     >
-                      <Trash2 size={14} aria-hidden />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-            );
-          })}
-        </nav>
+                      <button type="button" className="chat-list-main" onClick={() => selectConversation(session.id)}>
+                        <MessageSquare size={16} aria-hidden />
+                        <span>
+                          <b>{session.title || t.history.untitled}</b>
+                          <small>{formatSessionTime(session.updatedAt, language)}</small>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-delete-button"
+                        title={t.history.deleteSession}
+                        onClick={() => removeConversation(session.id)}
+                      >
+                        <Trash2 size={14} aria-hidden />
+                      </button>
+                    </div>
+                  )) : null}
+                </div>
+              </section>
+              );
+            })}
+          </nav>
+          <button
+            type="button"
+            className="history-scroll-button bottom"
+            title={historyScrollDownLabel}
+            aria-label={historyScrollDownLabel}
+            onClick={() => scrollHistory("down")}
+            disabled={!historyScrollState.canScrollDown}
+          >
+            <ChevronDown size={15} aria-hidden />
+          </button>
+        </section>
 
         <div className="sidebar-spacer" />
 
+        <div className={appRunning ? "sidebar-run-state active" : "sidebar-run-state"}>
+          {appRunning ? <RunningActivityMark compact /> : <LoaderCircle size={14} aria-hidden />}
+          <span>{appRunning ? t.sidebar.running : "Agents"}</span>
+          <b>{runtimeSnapshot.counts.running}</b>
+        </div>
+
         <section className="sidebar-actions">
-          <button
-            type="button"
-            className={mainView === "agents" ? "sidebar-tool active" : "sidebar-tool"}
-            onClick={() => {
-              setInspectorPanel(null);
-              setMainView("agents");
-            }}
-          >
-            <Bot size={16} aria-hidden />
-            {t.topbar.agents}
-            <span className="sidebar-badge">{runtimeSnapshot.counts.total}</span>
-          </button>
           <button
             type="button"
             className={mainView === "tools" && toolPage === "skills" ? "sidebar-tool active" : "sidebar-tool"}
@@ -3787,11 +4566,7 @@ function App() {
 	              <Layers3 size={15} aria-hidden />
 	              {t.topbar.tools}
 	            </button>
-	            <button type="button" className={mainView === "agents" ? "active" : ""} onClick={() => setMainView("agents")}>
-	              <Bot size={15} aria-hidden />
-	              {t.topbar.agents}
-	            </button>
-	          </div>
+		          </div>
           <div className="topbar-actions">
             {remoteStatus?.enabled && remoteStatus.running ? (
               <div className="runtime-pill ready">
@@ -3807,9 +4582,6 @@ function App() {
             >
               <KeyRound size={16} aria-hidden />
               <span>{hasGlobalApiKey ? t.topbar.apiKeySaved : t.topbar.apiKeyMissing}</span>
-            </button>
-            <button type="button" className="icon-button" title={`${t.topbar.checkRuntime}: ${selectedRuntimeLabel}`} onClick={() => refreshRuntime()}>
-              <Activity size={17} aria-hidden />
             </button>
             <button
               type="button"
@@ -3827,17 +4599,28 @@ function App() {
         <div className={`conversation-body ${mainView === "chat" ? "chat-view" : ""}`}>
           <div className={mainView === "chat" ? conversationLayoutClassName : messageListClassName}>
             <div className={mainView === "chat" ? "message-list chat-output-list" : "view-content"}>
-            {mainView === "chat" ? messages.map((message) => (
-                <article key={message.id} className={`message-row ${message.role}`}>
+            {mainView === "chat" ? messages.map((message) => {
+                const isRunningReply = message.role === "assistant" && activeSessionRunningReplyIds.has(message.id);
+                return (
+                <article key={message.id} className={`message-row ${message.role} ${isRunningReply ? "running-reply" : ""}`}>
                   <div className="message-avatar">
-                    {message.role === "assistant" ? <Bot size={16} aria-hidden /> : <Code2 size={16} aria-hidden />}
+                    {message.role === "assistant"
+                      ? isRunningReply ? <RunningActivityMark /> : <Bot size={16} aria-hidden />
+                      : <Code2 size={16} aria-hidden />}
                   </div>
                   <div className="message-bubble">
                     {message.title ? <strong>{message.title}</strong> : null}
+                    {isRunningReply ? (
+                      <span className="running-label">
+                        <RunningActivityMark compact />
+                        {t.sidebar.running}
+                      </span>
+                    ) : null}
                     <p>{message.content}</p>
                   </div>
                 </article>
-              )) : null}
+                );
+              }) : null}
 
             {mainView === "tools" ? (
               <section className="tool-dashboard">
@@ -3956,24 +4739,23 @@ function App() {
               </section>
 	            ) : null}
 	            {mainView === "tasks" ? scheduledTasksPage : null}
-	            {mainView === "agents" ? agentsPanel : null}
-	            </div>
-            {processStreamEnabled ? terminalPanel : null}
+		            </div>
+	            {mainView === "chat" || mainView === "terminal" ? terminalPanel : null}
           </div>
         </div>
 
         <footer className="composer">
           <div className="composer-actions">
             <div className="agent-mode-switch" aria-label={t.composer.modeLabel}>
-              <button type="button" className={agentMode === "plan" ? "active" : ""} onClick={() => setAgentMode("plan")}>
+              <button type="button" className={permissionMode === "plan" ? "active" : ""} onClick={() => setPermissionMode("plan")}>
                 <Brain size={15} aria-hidden />
                 Plan
               </button>
-              <button type="button" className={agentMode === "agent" ? "active" : ""} onClick={() => setAgentMode("agent")}>
+              <button type="button" className={permissionMode === "agent" ? "active" : ""} onClick={() => setPermissionMode("agent")}>
                 <Bot size={15} aria-hidden />
                 Agent
               </button>
-              <button type="button" className={agentMode === "yolo" ? "active" : ""} onClick={() => setAgentMode("yolo")}>
+              <button type="button" className={permissionMode === "yolo" ? "active" : ""} onClick={() => setPermissionMode("yolo")}>
                 <Zap size={15} aria-hidden />
                 YOLO
               </button>
@@ -3997,24 +4779,16 @@ function App() {
               <FolderOpen size={15} aria-hidden />
               <span>{selectedWorkspaceLabel}</span>
             </button>
-            <button
-              type="button"
-              className={processStreamEnabled ? "process-stream-toggle active" : "process-stream-toggle"}
-              aria-pressed={processStreamEnabled}
-              title={t.composer.harnessHint}
-              onClick={toggleProcessStream}
-            >
-              <TerminalSquare size={15} aria-hidden />
-              {t.composer.harness}
-            </button>
             <label className="model-picker">
               <span>{t.composer.modelLabel}</span>
               <span className="select-wrap">
                 <select
-                  value={selectedModelPreset?.value || settings.model}
+                  value={primaryModelPresets.some((preset) => preset.value === settings.model)
+                    ? settings.model
+                    : DEFAULT_DEEPSEEK_MODEL}
                   onChange={(event) => updateModel(event.target.value)}
                 >
-                  {modelPresets.map((preset) => (
+                  {primaryModelPresets.map((preset) => (
                     <option key={preset.value} value={preset.value}>{preset.label}</option>
                   ))}
                 </select>
@@ -4027,16 +4801,22 @@ function App() {
               value={agentPrompt}
               onChange={(event) => setAgentPrompt(event.target.value)}
               onKeyDown={handleComposerKeyDown}
-              placeholder={agentMode === "plan"
-                ? t.composer.planPlaceholder
-                : agentMode === "yolo"
-                  ? t.composer.yoloPlaceholder
-                  : t.composer.execPlaceholder}
+              placeholder={permissionMode === "plan"
+                  ? t.composer.planPlaceholder
+                  : permissionMode === "yolo"
+                    ? t.composer.yoloPlaceholder
+                    : t.composer.execPlaceholder}
               rows={2}
             />
-            <button type="button" className="send-button" onClick={sendPrompt} disabled={!agentPrompt.trim()}>
-              <Send size={18} aria-hidden />
-            </button>
+            {activeSessionBusy ? (
+              <button type="button" className="send-button stop-button" title={t.composer.stop} onClick={stop}>
+                <Square size={18} aria-hidden />
+              </button>
+            ) : (
+              <button type="button" className="send-button" onClick={sendPrompt} disabled={activeSessionBusy || !agentPrompt.trim()}>
+                <Send size={18} aria-hidden />
+              </button>
+            )}
           </div>
         </footer>
       </section>
@@ -4148,7 +4928,7 @@ function App() {
             </div>
           ) : null}
 
-          {inspectorPanel === "mcp" ? (
+          {false ? (
             <div className="inspector-content">
               <div className="tool-help">
                 <BookOpen size={17} aria-hidden />
@@ -4193,6 +4973,7 @@ function App() {
 
               <div className="mcp-summary-row">
                 <span>{t.mcp.summaryEnabled(enabledMcpCount)}</span>
+                <span>{t.mcp.injectable}: {mcpInjectableCount}</span>
                 <span>{t.mcp.summaryVisible(filteredMcpPresets.length)}</span>
                 <span>{t.mcp.summaryInstalled(mcpPresets.length)}</span>
               </div>
@@ -4212,8 +4993,8 @@ function App() {
                       <div key={server.id} className="mcp-test-row">
                         <div>
                           <strong>{serverName}</strong>
-                          <span className={server.ok ? "status-chip enabled" : "status-chip warning"}>
-                            {server.ok ? t.mcp.testOk : t.mcp.testFailed}
+	                          <span className={server.injectable ? "status-chip enabled" : "status-chip warning"}>
+	                            {server.injectable ? t.mcp.injectable : t.mcp.notInjected}
                           </span>
                         </div>
 	                        <code>{server.url || [server.command, ...server.args].filter(Boolean).join(" ")}</code>
@@ -4321,6 +5102,25 @@ function App() {
                     <span>{t.git.unstaged} {gitStatus.unstaged}</span>
                     <span>{t.git.untracked} {gitStatus.untracked}</span>
                   </div>
+
+                  <label className="branch-select-row">
+                    {t.git.switchBranch}
+                    <span className="select-wrap">
+                      <select
+                        value={gitStatus.branch}
+                        onChange={(event) => switchGitBranch(event.target.value)}
+                        disabled={gitBusy || gitStatus.hasChanges}
+                      >
+                        {gitStatus.branches.map((branch) => (
+                          <option key={`${branch.type}:${branch.name}`} value={branch.name}>
+                            {branch.name} · {branch.type === "remote" ? t.git.remoteBranch : t.git.localBranch}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown size={14} aria-hidden />
+                    </span>
+                    {gitStatus.hasChanges ? <small>{t.git.dirtyBranchBlocked}</small> : null}
+                  </label>
 
                   <label>
                     {t.git.remote}
@@ -4665,77 +5465,21 @@ function App() {
                 </button>
               </div>
               <label>
-                {language === "zh" ? "运行环境" : "Runtime"}
-                <span className="select-wrap">
-                  <select
-                    value={settings.binaryMode}
-                    onChange={async (event) => {
-                      const value = event.target.value as BinaryMode;
-                      updateSetting("binaryMode", value);
-                      await refreshRuntime({ binaryMode: value });
-                    }}
-                  >
-                    <option value="bundled">Bundled</option>
-                    <option value="system">System PATH</option>
-                    <option value="custom">Custom</option>
-                  </select>
-                  <ChevronDown size={14} aria-hidden />
-                </span>
-              </label>
-              <div className="path-picker">
-                <input
-                  value={settings.customBinaryPath}
-                  onChange={(event) => updateSetting("customBinaryPath", event.target.value)}
-                  placeholder={t.settings.customDeepseekPath}
-                  spellCheck={false}
-                />
-                <button type="button" title={t.settings.chooseBinary} onClick={chooseCustomBinary}>
-                  <TerminalSquare size={16} aria-hidden />
-                </button>
-              </div>
-              <label>
-                {t.settings.provider}
-                <span className="select-wrap">
-                  <select
-                    value={settings.provider}
-                    onChange={(event) => updateProvider(event.target.value as ProviderMode)}
-                  >
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="nvidia-nim">NVIDIA NIM</option>
-                  </select>
-                  <ChevronDown size={14} aria-hidden />
-                </span>
-              </label>
-              <label>
                 {t.settings.model}
                 <span className="select-wrap">
                   <select
-                    value={selectedModelPreset?.value || settings.model}
+                    value={primaryModelPresets.some((preset) => preset.value === settings.model)
+                      ? settings.model
+                      : DEFAULT_DEEPSEEK_MODEL}
                     onChange={(event) => updateModel(event.target.value)}
                     disabled={settings.provider !== "deepseek"}
                   >
-                    {modelPresets.map((preset) => (
+                    {primaryModelPresets.map((preset) => (
                       <option key={preset.value} value={preset.value}>{preset.label}</option>
                     ))}
                   </select>
                   <ChevronDown size={14} aria-hidden />
                 </span>
-              </label>
-              {selectedModelPreset ? (
-                <a className="model-doc-row" href={selectedModelPreset.docsUrl} target="_blank" rel="noreferrer">
-                  <BookOpen size={15} aria-hidden />
-                  <span>{selectedModelDocsLabel}</span>
-                  <code>{t.settings.apiModel(selectedModelApiName)}</code>
-                </a>
-              ) : null}
-              <label>
-                {t.settings.baseUrl}
-                <input
-                  value={settings.baseUrl}
-                  onChange={(event) => updateSetting("baseUrl", event.target.value)}
-                  placeholder={defaultBaseUrlForProvider(settings.provider)}
-                  spellCheck={false}
-                />
               </label>
               <label className="global-api-key-field">
                 {t.settings.apiKey}
@@ -4751,37 +5495,105 @@ function App() {
                 </div>
                 <small className="field-hint">{t.settings.apiKeyHint}</small>
               </label>
-              <section className={processStreamEnabled ? "runtime-toggle-card enabled" : "runtime-toggle-card"}>
-                <label className="check-row">
-                  <input
-                    type="checkbox"
-                    checked={processStreamEnabled}
-                    onChange={toggleProcessStream}
-                  />
-                  <span>{t.settings.harnessMode}</span>
+              <details className="advanced-settings">
+                <summary>
+                  <span>{t.settings.advancedRuntime}</span>
+                  <small>{t.settings.advancedRuntimeHint}</small>
+                </summary>
+                <label>
+                  {language === "zh" ? "运行环境" : "Runtime"}
+                  <span className="select-wrap">
+                    <select
+                      value={settings.binaryMode}
+                      onChange={async (event) => {
+                        const value = event.target.value as BinaryMode;
+                        updateSetting("binaryMode", value);
+                        await refreshRuntime({ binaryMode: value });
+                      }}
+                    >
+                      <option value="bundled">Bundled</option>
+                      <option value="system">System PATH</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                    <ChevronDown size={14} aria-hidden />
+                  </span>
                 </label>
-                <small>{t.settings.harnessHint}</small>
-              </section>
-              <div className="two-col">
-                <label className="check-row">
+                <div className="path-picker">
                   <input
-                    type="checkbox"
-                    checked={settings.allowShell}
-                    onChange={(event) => updateSetting("allowShell", event.target.checked)}
+                    value={settings.customBinaryPath}
+                    onChange={(event) => updateSetting("customBinaryPath", event.target.value)}
+                    placeholder={t.settings.customDeepseekPath}
+                    spellCheck={false}
                   />
-                  <span>{t.settings.allowShell}</span>
+                  <button type="button" title={t.settings.chooseBinary} onClick={chooseCustomBinary}>
+                    <TerminalSquare size={16} aria-hidden />
+                  </button>
+                </div>
+                <label>
+                  {t.settings.provider}
+                  <span className="select-wrap">
+                    <select
+                      value={settings.provider}
+                      onChange={(event) => updateProvider(event.target.value as ProviderMode)}
+                    >
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="nvidia-nim">NVIDIA NIM</option>
+                    </select>
+                    <ChevronDown size={14} aria-hidden />
+                  </span>
                 </label>
                 <label>
-                  {t.settings.agents}
+                  {t.settings.advancedModel}
+                  <span className="select-wrap">
+                    <select
+                      value={selectedModelPreset?.value || settings.model}
+                      onChange={(event) => updateModel(event.target.value)}
+                      disabled={settings.provider !== "deepseek"}
+                    >
+                      {modelPresets.map((preset) => (
+                        <option key={preset.value} value={preset.value}>{preset.label}</option>
+                      ))}
+                    </select>
+                    <ChevronDown size={14} aria-hidden />
+                  </span>
+                </label>
+                {selectedModelPreset ? (
+                  <a className="model-doc-row" href={selectedModelPreset.docsUrl} target="_blank" rel="noreferrer">
+                    <BookOpen size={15} aria-hidden />
+                    <span>{selectedModelDocsLabel}</span>
+                    <code>{t.settings.apiModel(selectedModelApiName)}</code>
+                  </a>
+                ) : null}
+                <label>
+                  {t.settings.baseUrl}
                   <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={settings.maxSubagents}
-                    onChange={(event) => updateSetting("maxSubagents", Number(event.target.value))}
+                    value={settings.baseUrl}
+                    onChange={(event) => updateSetting("baseUrl", event.target.value)}
+                    placeholder={defaultBaseUrlForProvider(settings.provider)}
+                    spellCheck={false}
                   />
                 </label>
-              </div>
+                <div className="two-col">
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={settings.allowShell}
+                      onChange={(event) => updateSetting("allowShell", event.target.checked)}
+                    />
+                    <span>{t.settings.allowShell}</span>
+                  </label>
+                  <label>
+                    {t.settings.agents}
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={settings.maxSubagents}
+                      onChange={(event) => updateSetting("maxSubagents", Number(event.target.value))}
+                    />
+                  </label>
+                </div>
+              </details>
               <button type="button" className="primary wide" onClick={saveSettings}>
                 {t.settings.save}
               </button>

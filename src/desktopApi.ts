@@ -12,10 +12,11 @@ const previewSettings: DesktopSettings = {
   mcpEnabled: false,
   allowShell: false,
   maxSubagents: 10,
+  processStreamEnabled: true,
   harnessEnabled: false,
   launchAction: "tui",
   rememberWorkspace: true,
-  enabledSkills: ["superpowers", "ui-ux-design", "cron-scheduler", "skill-downloader"],
+  enabledSkills: ["superpowers", "ui-ux-pro-max", "cron-scheduler", "skill-downloader"],
   enabledMcpServers: [],
   mobileBridgeEnabled: false,
   mobileBridgeHost: "127.0.0.1",
@@ -44,24 +45,60 @@ function previewApiModel(provider: ProviderMode, model: string) {
 
 const previewSkillTemplateDefaults: Record<string, string> = {
   superpowers: [
+    "---",
+    "name: superpowers",
+    "description: Use for planning, task decomposition, code edits, MCP/tool readiness checks, verification, and concise final reporting.",
+    "---",
+    "",
     "# Superpowers",
     "",
-    "Use this skill to strengthen planning, task decomposition, code editing, verification, and final reporting.",
+    "Use this skill to keep desktop Agent work grounded in the user's real goal, the current workspace, and verified runtime state.",
     "",
-    "- Start by identifying the user's concrete goal and the workspace scope.",
-    "- Prefer small, reversible edits that match the existing codebase.",
-    "- Verify changes with the narrowest useful command before reporting completion.",
-    "- Surface blockers, assumptions, and residual risk clearly."
+    "## Workflow",
+    "",
+    "1. Identify the user's concrete goal, target workspace, and whether they asked for planning, implementation, or review.",
+    "2. Inspect the relevant files or runtime state before making assumptions.",
+    "3. Break the work into small reversible steps that match the existing codebase.",
+    "4. Before relying on an external tool, distinguish selected, injected, authenticated, connected, and callable states.",
+    "5. Verify changes with the narrowest useful command first, then broader checks when the change touches shared behavior.",
+    "6. Report changed surfaces, verification evidence, blockers, and remaining risk.",
+    "",
+    "## MCP Boundaries",
+    "",
+    "- Treat MCP selection in the UI as intent only; it does not prove the MCP is callable.",
+    "- Treat launch-time injection as allowed only when adapter preflight reports the MCP as ready.",
+    "- If a server is missing authentication, has a placeholder URL, or has a missing command, say it is blocked and use another available tool.",
+    "- Never claim GitHub, Slack, Notion, Figma, database, payment, or remote MCP access is available until preflight or an actual tool call proves it.",
+    "- Do not write API keys or tokens into Skill files, prompts, logs, generated docs, or MCP JSON examples.",
+    "",
+    "## Output",
+    "",
+    "- Keep user updates short and factual.",
+    "- When blocked, name the missing credential or configuration and the exact next action.",
+    "- When complete, separate verified behavior from unverified or skipped checks."
   ].join("\n"),
-  "ui-ux-design": [
-    "# UI/UX Design",
+  "ui-ux-pro-max": [
+    "---",
+    "name: ui-ux-pro-max",
+    "description: Use when designing, building, or refining frontend UI/UX: layouts, components, visual systems, typography, color, and UX patterns.",
+    "---",
     "",
-    "Use this skill for product UI work, desktop app polish, and visual interaction checks.",
+    "# UI/UX Pro Max - Design Intelligence",
     "",
-    "- Keep primary workflows visible and reduce default configuration clutter.",
-    "- Use familiar controls: icon buttons for tools, toggles for binary settings, and compact panels for advanced options.",
-    "- Check spacing, overflow, text fit, empty states, disabled states, and responsive constraints.",
-    "- Prefer restrained, work-focused surfaces for developer tools."
+    "Searchable design intelligence for styles, color palettes, font pairings, chart types, product recommendations, UX guidelines, and stack-specific best practices.",
+    "",
+    "## How to Use This Skill",
+    "",
+    "- In the packaged app, run `python3 scripts/search.py \"<keyword>\" --domain <domain>` from `$DEEPSEEK_SKILLS_DIR/ui-ux-pro-max`.",
+    "- Search product, style, typography, color, landing, chart, UX, and stack guidance before implementing substantial UI work.",
+    "- Infer the stack from the project when the user does not specify one.",
+    "",
+    "## State Clarity",
+    "",
+    "- Do not collapse different states into one label. Separate selected, saved, injected, authenticated, connected, callable, failed, and disabled.",
+    "- For MCP and other external tools, show blocked states near the action that would otherwise imply availability.",
+    "- A missing credential, placeholder URL, invalid URL, or missing command should read as blocked and should explain the exact missing piece.",
+    "- Keep status chips short and pair them with concise helper text when the consequence matters."
   ].join("\n"),
   "cron-scheduler": [
     "---",
@@ -104,6 +141,8 @@ let previewApiKeys: Record<ProviderMode, string> = {
   deepseek: "",
   "nvidia-nim": ""
 };
+let previewMcpEnv: Record<string, string> = {};
+let previewGitBranch = "main";
 
 let previewRuntimeSnapshot: RuntimeSnapshot = {
   status: "idle",
@@ -125,6 +164,26 @@ let previewRuntimeSnapshot: RuntimeSnapshot = {
     failed: 0,
     cancelled: 0
   },
+  events: []
+};
+
+let previewRuntimeOrchestratorSnapshot: RuntimeOrchestratorSnapshot = {
+  status: "idle",
+  maxConcurrent: 8,
+  maxConcurrentSessions: 8,
+  activeCount: 0,
+  queueDepth: 0,
+  counts: {
+    total: 0,
+    queued: 0,
+    running: 0,
+    cancelling: 0,
+    completed: 0,
+    failed: 0,
+    cancelled: 0
+  },
+  conversations: [],
+  turns: [],
   events: []
 };
 
@@ -218,19 +277,47 @@ function previewRuntime(settings: Partial<DesktopSettings> = {}): RuntimeCheck {
 }
 
 function previewGitStatus(workspacePath: string): GitStatus {
+  const branches: GitBranchInfo[] = [
+    {
+      name: "main",
+      type: "local",
+      current: previewGitBranch === "main",
+      upstream: "origin/main",
+      commit: "abc1234",
+      subject: "Preview commit"
+    },
+    {
+      name: "codex/preview-agent",
+      type: "local",
+      current: previewGitBranch === "codex/preview-agent",
+      upstream: "",
+      commit: "def5678",
+      subject: "Preview branch"
+    },
+    {
+      name: "origin/master",
+      type: "remote",
+      current: false,
+      upstream: "",
+      commit: "987abcd",
+      subject: "Remote master"
+    }
+  ];
+
   return {
     ok: true,
     workspacePath: workspacePath || previewSettings.workspacePath,
     repoRoot: workspacePath || previewSettings.workspacePath,
     isRepo: true,
-    branch: "main",
-    upstream: "origin/main",
+    branch: previewGitBranch,
+    upstream: branches.find((branch) => branch.type === "local" && branch.name === previewGitBranch)?.upstream || "",
     ahead: 0,
     behind: 0,
     hasChanges: true,
     staged: 0,
     unstaged: 1,
     untracked: 1,
+    branches,
     remotes: [
       {
         name: "origin",
@@ -274,6 +361,12 @@ function previewMcpConfig(settings: DesktopSettings) {
   };
 }
 
+function previewMcpStatus(id: string, missingEnv: string[], warnings: string[]): McpAdapterStatus {
+  if (missingEnv.length > 0) return "needs-auth";
+  if (warnings.length > 0 || (id === "mcp-remote" && !String(previewMcpEnv.MCP_REMOTE_URL || "").trim())) return "needs-config";
+  return "ready";
+}
+
 function previewMcpTests(settings: DesktopSettings): McpServerTest[] {
   if (settings.mcpConfigPath && previewMcpConfigText) {
     try {
@@ -287,30 +380,46 @@ function previewMcpTests(settings: DesktopSettings): McpServerTest[] {
             .filter(([, value]) => !String(value || "").trim())
             .map(([key]) => key);
           const hasUrl = Boolean(String(server.url || "").trim());
+          const warnings = missingEnv.length ? [`Missing environment variables: ${missingEnv.join(", ")}`] : [];
+          const status = previewMcpStatus(id, missingEnv, warnings);
           return {
             id,
             command: String(server.command || ""),
             args: Array.isArray(server.args) ? server.args.map(String) : [],
             url: String(server.url || ""),
-            ok: (hasUrl || Boolean(server.command)) && missingEnv.length === 0,
+            ok: (hasUrl || Boolean(server.command)) && status === "ready",
+            injectable: (hasUrl || Boolean(server.command)) && status === "ready",
+            status,
             commandFound: hasUrl || Boolean(server.command),
             missingEnv,
-            warnings: missingEnv.length ? [`Missing environment variables: ${missingEnv.join(", ")}`] : []
+            warnings
           };
         });
     } catch {
       return [];
     }
   }
-  return (settings.enabledMcpServers || []).map((id) => ({
-    id,
-    command: "npx",
-    args: ["-y", id],
-    ok: id === "playwright" || id === "context7",
-    commandFound: true,
-    missingEnv: id === "github" ? ["GITHUB_PERSONAL_ACCESS_TOKEN"] : [],
-    warnings: id === "github" ? ["Missing environment variables: GITHUB_PERSONAL_ACCESS_TOKEN"] : []
-  }));
+  return (settings.enabledMcpServers || []).map((id) => {
+    const requiredEnv = id === "github"
+      ? ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+      : id === "mcp-remote"
+        ? ["MCP_REMOTE_URL"]
+        : [];
+    const missingEnv = requiredEnv.filter((key) => !String(previewMcpEnv[key] || "").trim());
+    const warnings = missingEnv.length ? [`Missing environment variables: ${missingEnv.join(", ")}`] : [];
+    const status = previewMcpStatus(id, missingEnv, warnings);
+    return {
+      id,
+      command: "npx",
+      args: ["-y", id],
+      ok: status === "ready",
+      injectable: status === "ready",
+      status,
+      commandFound: true,
+      missingEnv,
+      warnings
+    };
+  });
 }
 
 function createPreviewBridge(): Window["deepseekDesktop"] {
@@ -318,6 +427,8 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
   const exits = new Set<(exit: { exitCode: number; signal?: number }) => void>();
   const runtimeSnapshots = new Set<(snapshot: RuntimeSnapshot) => void>();
   const runtimeEvents = new Set<(event: RuntimeEvent) => void>();
+  const runtimeOrchestratorSnapshots = new Set<(snapshot: RuntimeOrchestratorSnapshot) => void>();
+  const runtimeTurnEvents = new Set<(event: RuntimeTurnEvent) => void>();
   const remoteStatuses = new Set<(status: RemoteBridgeStatus) => void>();
   let previewAuth: RemoteAuthState = {
     desktopId: "desktop_preview",
@@ -351,9 +462,16 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
     }
   });
 
-	  return {
-	    getSettings: async () => previewSettings,
-	    saveSettings: async (settings) => {
+  return {
+    getSettings: async () => previewSettings,
+    openExternal: async (url) => {
+      if (typeof window !== "undefined" && /^https?:\/\//i.test(url)) {
+        window.open(url, "_blank", "noopener,noreferrer");
+        return { ok: true, url };
+      }
+      return { ok: false, error: "Invalid URL" };
+    },
+    saveSettings: async (settings) => {
 	      Object.assign(previewSettings, settings);
 	      previewSettings.model = previewSettings.provider === "deepseek"
 	        ? previewSettings.model || "deepseek-v4-pro"
@@ -437,16 +555,31 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
         skillRoot: root
       };
     },
-    saveMcpConfig: async (payload) => {
-      try {
-        previewMcpConfigText = JSON.stringify(JSON.parse(payload.content), null, 2);
-      } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : "Invalid JSON" };
-      }
-      previewMcpConfigPath = "/browser-preview/userData/mcp.custom.json";
-      return { ok: true, path: previewMcpConfigPath, content: previewMcpConfigText };
-    },
-	    testMcpServers: async (payload) => {
+	    saveMcpConfig: async (payload) => {
+	      try {
+	        previewMcpConfigText = JSON.stringify(JSON.parse(payload.content), null, 2);
+	      } catch (error) {
+	        return { ok: false, error: error instanceof Error ? error.message : "Invalid JSON" };
+	      }
+	      previewMcpConfigPath = "/browser-preview/userData/mcp.custom.json";
+	      return { ok: true, path: previewMcpConfigPath, content: previewMcpConfigText };
+	    },
+	    saveMcpEnvSecret: async (payload) => {
+	      const key = String(payload.name || "").trim().toUpperCase();
+	      if (!/^[A-Z0-9_]+$/.test(key)) {
+	        return { ok: false, key, configured: false, source: "missing", error: "Environment variable name is invalid." };
+	      }
+	      const value = String(payload.value || "").trim();
+	      if (value) {
+	        previewMcpEnv = { ...previewMcpEnv, [key]: value };
+	      } else {
+	        const next = { ...previewMcpEnv };
+	        delete next[key];
+	        previewMcpEnv = next;
+	      }
+	      return { ok: true, key, configured: Boolean(previewMcpEnv[key]), source: previewMcpEnv[key] ? "desktop" : "missing" };
+	    },
+		    testMcpServers: async (payload) => {
 	      const servers = previewMcpTests(payload.settings);
 	      return {
 	        ok: servers.every((server) => server.ok),
@@ -540,9 +673,82 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
       },
 	    checkRuntime: async (settings) => previewRuntime(settings),
 	    getRuntimeSnapshot: async () => previewRuntimeSnapshot,
+	    getRuntimeOrchestratorSnapshot: async () => previewRuntimeOrchestratorSnapshot,
+	    startRuntimeTurn: async (payload) => {
+	      const now = new Date().toISOString();
+	      const turnId = `preview-turn-${Date.now().toString(36)}`;
+	      const conversationId = payload.conversationId || "preview-conversation";
+	      const threadId = `preview-thread-${conversationId}`;
+	      const turn: RuntimeTurn = {
+	        turnId,
+	        conversationId,
+	        threadId,
+	        status: "completed",
+	        prompt: payload.prompt,
+	        output: `Preview runtime accepted: ${payload.prompt}`,
+	        error: "",
+	        queuedAt: now,
+	        startedAt: now,
+	        completedAt: now,
+	        replyMessageId: payload.replyMessageId || "",
+	        queuePosition: 0
+	      };
+	      const event: RuntimeTurnEvent = { ...turn, type: "turn-completed", at: now };
+	      previewRuntimeOrchestratorSnapshot = {
+	        ...previewRuntimeOrchestratorSnapshot,
+	        status: "idle",
+	        activeCount: 0,
+	        queueDepth: 0,
+	        counts: {
+	          total: previewRuntimeOrchestratorSnapshot.counts.total + 1,
+	          queued: 0,
+	          running: 0,
+	          cancelling: 0,
+	          completed: previewRuntimeOrchestratorSnapshot.counts.completed + 1,
+	          failed: 0,
+	          cancelled: 0
+	        },
+	        conversations: [{
+	          conversationId,
+	          workspacePath: payload.workspacePath,
+	          threadId,
+	          activeTurnId: "",
+	          queuedTurnIds: [],
+	          status: "idle",
+	          updatedAt: now
+	        }],
+	        turns: [...previewRuntimeOrchestratorSnapshot.turns, turn].slice(-50)
+	      };
+	      runtimeOrchestratorSnapshots.forEach((listener) => listener(previewRuntimeOrchestratorSnapshot));
+	      runtimeTurnEvents.forEach((listener) => listener(event));
+	      return { ok: true, queued: false, turnId, conversationId, threadId, snapshot: previewRuntimeOrchestratorSnapshot };
+	    },
+	    cancelRuntimeTurn: async (payload) => {
+	      const snapshot = {
+	        ...previewRuntimeOrchestratorSnapshot,
+	        turns: previewRuntimeOrchestratorSnapshot.turns.map((turn) => payload.turnId && turn.turnId !== payload.turnId ? turn : {
+	          ...turn,
+	          status: "cancelled" as RuntimeTurnStatus
+	        })
+	      };
+	      previewRuntimeOrchestratorSnapshot = snapshot;
+	      runtimeOrchestratorSnapshots.forEach((listener) => listener(snapshot));
+	      return { ok: true, cancelled: 1, snapshot };
+	    },
 	    getGitStatus: async (workspacePath) => previewGitStatus(workspacePath),
     initGitRepository: async (workspacePath) => ({ ok: true, status: previewGitStatus(workspacePath), output: "Initialized empty Git repository" }),
     setGitRemote: async (payload) => ({ ok: true, status: { ...previewGitStatus(payload.workspacePath), originUrl: payload.remoteUrl }, output: "" }),
+    switchGitBranch: async (payload) => {
+      if (previewGitStatus(payload.workspacePath).hasChanges) {
+        return {
+          ok: false,
+          error: "Commit or stash local changes before switching branches.",
+          status: previewGitStatus(payload.workspacePath)
+        };
+      }
+      previewGitBranch = payload.branchName || previewGitBranch;
+      return { ok: true, status: previewGitStatus(payload.workspacePath), output: `Switched to ${previewGitBranch}` };
+    },
     fetchGitRepository: async (payload) => ({ ok: true, status: previewGitStatus(payload.workspacePath), output: "Fetched origin" }),
     pullGitRepository: async (payload) => ({ ok: true, status: previewGitStatus(payload.workspacePath), output: "Already up to date." }),
     pushGitRepository: async (payload) => ({ ok: true, status: previewGitStatus(payload.workspacePath), output: "Pushed main" }),
@@ -591,7 +797,7 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
 	      runtimeEvents.forEach((listener) => listener(event));
 	      runtimeSnapshots.forEach((listener) => listener(previewRuntimeSnapshot));
 	      const line = [
-	        options.harnessEnabled ? "\r\n[harness preview] browser-preview://deepseek " : "\r\nbrowser-preview://deepseek ",
+	        "\r\nbrowser-preview://deepseek ",
         options.launchAction === "exec" || options.launchAction === "plan" ? `${options.launchAction} exec --auto` : options.launchAction,
         "\r\n",
         "Electron preload is not active in browser preview.\r\n\r\n"
@@ -710,6 +916,14 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
 	    onRuntimeEvent: (callback) => {
 	      runtimeEvents.add(callback);
 	      return () => runtimeEvents.delete(callback);
+	    },
+	    onRuntimeOrchestratorSnapshot: (callback) => {
+	      runtimeOrchestratorSnapshots.add(callback);
+	      return () => runtimeOrchestratorSnapshots.delete(callback);
+	    },
+	    onRuntimeTurnEvent: (callback) => {
+	      runtimeTurnEvents.add(callback);
+	      return () => runtimeTurnEvents.delete(callback);
 	    },
 	    onRemoteStatus: (callback) => {
       remoteStatuses.add(callback);

@@ -50,6 +50,7 @@
       "package.json"
     ],
     "asarUnpack": [
+      "electron/skills/**",
       "node_modules/deepseek-tui/bin/downloads/**",
       "node_modules/node-pty/**"
     ],

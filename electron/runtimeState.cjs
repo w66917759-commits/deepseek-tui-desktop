@@ -48,6 +48,17 @@ function countAgents(agents) {
   });
 }
 
+function settleActiveAgents(agents, status, timestamp) {
+  return agents.map((agent) => {
+    if (agent.status !== "running" && agent.status !== "queued") return agent;
+    return {
+      ...agent,
+      status,
+      updatedAt: timestamp
+    };
+  });
+}
+
 function emptySnapshot() {
   const timestamp = nowIso();
   return {
@@ -106,10 +117,13 @@ class DeepSeekRuntimeState extends EventEmitter {
   finishRun(exit = {}) {
     const timestamp = nowIso();
     const failed = exit.signal || (typeof exit.exitCode === "number" && exit.exitCode !== 0);
+    const agents = settleActiveAgents(this.state.agents, failed ? "cancelled" : "completed", timestamp);
     this.state = {
       ...this.state,
       status: failed ? "failed" : "completed",
       updatedAt: timestamp,
+      agents,
+      counts: countAgents(agents),
       lastExit: {
         exitCode: typeof exit.exitCode === "number" ? exit.exitCode : 0,
         signal: exit.signal || "",
@@ -122,10 +136,14 @@ class DeepSeekRuntimeState extends EventEmitter {
 
   stopRun() {
     if (this.state.status === "idle") return;
+    const timestamp = nowIso();
+    const agents = settleActiveAgents(this.state.agents, "cancelled", timestamp);
     this.state = {
       ...this.state,
       status: "stopped",
-      updatedAt: nowIso()
+      updatedAt: timestamp,
+      agents,
+      counts: countAgents(agents)
     };
     this.addEvent("run-stopped", "Run stopped", "");
     this.emitSnapshot();
@@ -236,19 +254,55 @@ function runtimeEventLabel(eventName) {
 
 function parseTerminalAgents(text) {
   const agents = [];
-  const lines = stripAnsi(text).split("\n").map((line) => line.trim()).filter(Boolean);
+  const clean = stripAnsi(text);
+  const contextual = /\bsub-agents?\b/i.test(clean);
+  const lines = clean.split("\n").map((line) => line.trim()).filter(Boolean);
   for (const line of lines) {
-    if (/^sub-agents?:/i.test(line) || /\(no data\)/i.test(line)) continue;
-    const match = line.match(/^(?:[-*]\s*)?([A-Za-z0-9_.:-]{2,80})\s+(Queued|Running|Completed|Failed|Cancelled|Canceled|Interrupted)\b[:\s-]*(.*)$/i);
+    const match = parseTerminalAgentLine(line, contextual);
     if (!match) continue;
     agents.push({
-      id: match[1],
-      name: match[1],
-      status: match[2],
-      summary: match[3] || ""
+      id: match.id,
+      name: match.name,
+      status: match.status,
+      summary: match.summary
     });
   }
   return agents;
+}
+
+function parseTerminalAgentLine(rawLine, contextual) {
+  if (!rawLine || /\(no data\)/i.test(rawLine)) return null;
+  let line = rawLine
+    .trim()
+    .replace(/^[-*]\s*/, "")
+    .replace(/^\d+\.\s*/, "");
+  if (/^sub-agents?:\s*$/i.test(line)) return null;
+
+  const explicit = line.match(/^(?:agent|sub-agent)\s+(.+)$/i);
+  if (explicit) {
+    line = explicit[1].trim();
+    contextual = true;
+  }
+  if (!contextual) return null;
+
+  const patterns = [
+    /^([A-Za-z0-9_.:-]{2,80})\s+\[(Queued|Running|Completed|Failed|Cancelled|Canceled|Interrupted)\]\s*(.*)$/i,
+    /^([A-Za-z0-9_.:-]{2,80})\s*:\s*(Queued|Running|Completed|Failed|Cancelled|Canceled|Interrupted)\b(.*)$/i,
+    /^([A-Za-z0-9_.:-]{2,80})\s+(Queued|Running|Completed|Failed|Cancelled|Canceled|Interrupted)\b(.*)$/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = line.match(pattern);
+    if (!match) continue;
+    const name = match[1].replace(/:+$/g, "");
+    return {
+      id: name,
+      name,
+      status: match[2],
+      summary: String(match[3] || "").replace(/^[\s:-]+/, "")
+    };
+  }
+  return null;
 }
 
 module.exports = {
