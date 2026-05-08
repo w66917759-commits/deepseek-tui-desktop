@@ -153,30 +153,16 @@ codesign --verify --deep --strict --verbose=2 "release/mac-arm64/DeepSeek TUI De
 ### Windows Installer
 
 ```bash
-npm run dist:win:test
+npm run dist:win
 ```
 
-Creates or reuses a local self-signed test certificate at `build/certs/deepseek-tui-desktop-local-test.pfx`, prefetches the Windows x64 `deepseek.exe` and `deepseek-tui.exe`, builds the renderer, and creates a signed NSIS installer:
+Builds the renderer and creates a signed NSIS installer:
 
 ```
 release/DeepSeek TUI Desktop-0.1.0-win-x64-setup.exe
 ```
 
-The test certificate is not trusted and is ignored by git. Testers should expect Windows SmartScreen warnings. Use a real code-signing certificate for public distribution.
-
-Lower-level commands:
-
-```bash
-npm run cert:win:self-signed
-npm run prepare:win-runtime
-npm run dist:win
-```
-
-Override the PFX password:
-
-```bash
-DEEPSEEK_TUI_WIN_CERT_PASSWORD="your-local-password" npm run dist:win:test
-```
+Use a real code-signing certificate for public distribution.
 
 ### Cross-Build Notes
 

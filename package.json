@@ -7,13 +7,9 @@
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build",
-    "test": "node --test test/*.test.cjs",
     "prepare:win-runtime": "node scripts/prepare-win-runtime.cjs",
-    "cert:win:self-signed": "node scripts/create-win-test-cert.cjs",
-    "test:live:deepseek": "DEEPSEEK_LIVE_TEST=1 node --test test/liveDeepSeekAgent.test.cjs",
     "dist:mac": "npm run build && electron-builder --mac dmg --arm64",
-    "dist:win": "npm run prepare:win-runtime && npm run build && electron-builder --win nsis --x64 -c.npmRebuild=false",
-    "dist:win:test": "node scripts/dist-win-test.cjs"
+    "dist:win": "npm run prepare:win-runtime && npm run build && electron-builder --win nsis --x64 -c.npmRebuild=false"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
