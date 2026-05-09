@@ -22,3 +22,13 @@ test("sidebar history list stays content-sized until it reaches its height cap",
   assert.doesNotMatch(historyShell, /flex:\s*1\s+1\s+auto;/);
   assert.match(sidebarSpacer, /flex:\s*1\s+1\s+auto;/);
 });
+
+test("scheduled task sidebar action opens the automation task view", () => {
+  const appSource = readFileSync(join(__dirname, "../src/App.tsx"), "utf8");
+  const match = appSource.match(/const openScheduledTasksPage = useCallback\(\(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/);
+
+  assert.ok(match, "Missing openScheduledTasksPage callback");
+  assert.match(match[1], /setMainView\("tasks"\);/);
+  assert.doesNotMatch(match[1], /setMainView\("tools"\);/);
+  assert.doesNotMatch(match[1], /setToolPage\("skills"\);/);
+});

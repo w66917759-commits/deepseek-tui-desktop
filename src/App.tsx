@@ -3964,10 +3964,9 @@ function App() {
 
   const openScheduledTasksPage = useCallback(() => {
     setInspectorPanel(null);
-    setToolPage("skills");
-    setMainView("tools");
-    setTemplateMessage(t.skills.scheduledOpened);
-  }, [t]);
+    setMainView("tasks");
+    setAutomationMessage("");
+  }, []);
 
   const toggleInspectorPanel = useCallback((panel: Exclude<InspectorPanel, null>) => {
     setInspectorPanel((current) => current === panel ? null : panel);
