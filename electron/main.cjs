@@ -6,12 +6,14 @@ const { DeepSeekDesktopHarness } = require("./harness.cjs");
 const { DesktopRemoteBridge } = require("./remoteBridge.cjs");
 const { AppServerClient } = require("./appServerClient.cjs");
 const { RuntimeOrchestrator, createDeepSeekCliRunner } = require("./runtimeOrchestrator.cjs");
+const { RuntimeApiService } = require("./runtimeApiService.cjs");
 
 let mainWindow = null;
 let harness = null;
 let remoteBridge = null;
 let appServerClient = null;
 let orchestrator = null;
+let runtimeApiService = null;
 
 const isDev = !app.isPackaged;
 const DEFAULT_RUNTIME_SESSION_CONCURRENCY = 8;
@@ -153,6 +155,12 @@ function sendRuntimeOrchestratorSnapshot(snapshot) {
 function sendRuntimeTurnEvent(event) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("runtime:turnEvent", event);
+  }
+}
+
+function sendRuntimeApiStatus(status) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("runtimeApi:status", status);
   }
 }
 
@@ -365,6 +373,18 @@ function registerIpc() {
 
   ipcMain.handle("runtime:cancelTurn", (_event, payload = {}) => getOrchestrator().cancelTurn(payload));
 
+  ipcMain.handle("runtimeApi:getStatus", (_event, settings) => runtimeApiService.getStatus(settings));
+
+  ipcMain.handle("runtimeApi:getInfo", (_event, settings) => runtimeApiService.getInfo(settings));
+
+  ipcMain.handle("runtimeApi:listSkills", (_event, settings) => runtimeApiService.listSkills(settings));
+
+  ipcMain.handle("runtimeApi:setSkillEnabled", (_event, payload) => runtimeApiService.setSkillEnabled(payload));
+
+  ipcMain.handle("runtimeApi:listMcpServers", (_event, settings) => runtimeApiService.listMcpServers(settings));
+
+  ipcMain.handle("runtimeApi:decideApproval", (_event, payload) => runtimeApiService.decideApproval(payload));
+
   ipcMain.handle("git:status", (_event, workspacePath) => harness.gitStatus(workspacePath));
 
   ipcMain.handle("git:init", (_event, workspacePath) => harness.gitInit(workspacePath));
@@ -448,6 +468,8 @@ function registerIpc() {
 app.whenReady().then(() => {
   harness = new DeepSeekDesktopHarness(app);
   remoteBridge = new DesktopRemoteBridge(app, harness);
+  runtimeApiService = new RuntimeApiService({ app, harness });
+  runtimeApiService.on("status", sendRuntimeApiStatus);
   createOrchestrator();
 
   harness.on("terminal:data", (data) => {
@@ -486,6 +508,9 @@ app.on("window-all-closed", () => {
   }
   if (appServerClient) {
     appServerClient.close().catch(() => undefined);
+  }
+  if (runtimeApiService) {
+    runtimeApiService.stop().catch(() => undefined);
   }
   if (process.platform !== "darwin") {
     app.quit();

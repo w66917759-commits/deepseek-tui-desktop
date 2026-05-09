@@ -187,6 +187,32 @@ let previewRuntimeOrchestratorSnapshot: RuntimeOrchestratorSnapshot = {
   events: []
 };
 
+let previewRuntimeApiStatus: RuntimeApiStatus = {
+  state: "connected",
+  connected: true,
+  host: "127.0.0.1",
+  port: 7878,
+  url: "http://127.0.0.1:7878",
+  pid: 7878,
+  startedAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  error: "",
+  info: {
+    bind_host: "127.0.0.1",
+    port: 7878,
+    auth_required: true,
+    version: "0.8.21"
+  },
+  health: {
+    status: "ok",
+    service: "deepseek-runtime-api",
+    mode: "local"
+  },
+  lastStdout: "Runtime API listening on http://127.0.0.1:7878",
+  lastStderr: "",
+  pendingApprovals: []
+};
+
 function previewSkillName(id: string) {
   return id.split("-").filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ") || "Skill";
 }
@@ -208,6 +234,44 @@ function previewSkillDraft(id: string, root: string, content: string, source: "d
     origin: previewSkillTemplateDefaults[id] ? "preset" : "custom",
     content
   };
+}
+
+function previewRuntimeApiSkills(settings: DesktopSettings): RuntimeApiSkill[] {
+  const root = "/browser-preview/userData/skills";
+  const ids = Array.from(new Set([
+    ...Object.keys(previewSkillTemplateDefaults),
+    ...Object.keys(previewSkillTemplates)
+  ]));
+  return ids.map((id) => {
+    const content = previewSkillTemplates[id] || previewSkillTemplateDefaults[id] || "";
+    const draft = previewSkillDraft(id, root, content, previewSkillTemplates[id] ? "file" : "default");
+    return {
+      id,
+      name: draft.name,
+      description: draft.description,
+      path: draft.path,
+      enabled: settings.skillsEnabled !== false && settings.enabledSkills.includes(id)
+    };
+  });
+}
+
+function previewRuntimeApiMcpServers(settings: DesktopSettings): RuntimeApiMcpServer[] {
+  return previewMcpTests(settings).map((server) => ({
+    id: server.id,
+    name: previewSkillName(server.id),
+    enabled: server.injectable,
+    status: server.status,
+    command: [server.command, ...server.args].filter(Boolean).join(" "),
+    url: server.url || ""
+  }));
+}
+
+function publishPreviewRuntimeApiStatus(listeners: Set<(status: RuntimeApiStatus) => void>) {
+  previewRuntimeApiStatus = {
+    ...previewRuntimeApiStatus,
+    updatedAt: new Date().toISOString()
+  };
+  listeners.forEach((listener) => listener(previewRuntimeApiStatus));
 }
 
 let previewConversationStore: ConversationStore = {
@@ -429,6 +493,7 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
   const runtimeEvents = new Set<(event: RuntimeEvent) => void>();
   const runtimeOrchestratorSnapshots = new Set<(snapshot: RuntimeOrchestratorSnapshot) => void>();
   const runtimeTurnEvents = new Set<(event: RuntimeTurnEvent) => void>();
+  const runtimeApiStatuses = new Set<(status: RuntimeApiStatus) => void>();
   const remoteStatuses = new Set<(status: RemoteBridgeStatus) => void>();
   let previewAuth: RemoteAuthState = {
     desktopId: "desktop_preview",
@@ -735,6 +800,40 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
 	      runtimeOrchestratorSnapshots.forEach((listener) => listener(snapshot));
 	      return { ok: true, cancelled: 1, snapshot };
 	    },
+	    getRuntimeApiStatus: async () => {
+	      publishPreviewRuntimeApiStatus(runtimeApiStatuses);
+	      return previewRuntimeApiStatus;
+	    },
+	    getRuntimeApiInfo: async () => {
+	      publishPreviewRuntimeApiStatus(runtimeApiStatuses);
+	      return { ok: true, info: previewRuntimeApiStatus.info || undefined };
+	    },
+	    listRuntimeApiSkills: async (settings = previewSettings) => ({
+	      ok: true,
+	      directory: "/browser-preview/userData/skills",
+	      warnings: [],
+	      skills: previewRuntimeApiSkills({ ...previewSettings, ...settings })
+	    }),
+	    setRuntimeApiSkillEnabled: async (payload) => {
+	      const name = payload.name;
+	      previewSettings.enabledSkills = payload.enabled
+	        ? Array.from(new Set([...previewSettings.enabledSkills, name]))
+	        : previewSettings.enabledSkills.filter((id) => id !== name);
+	      const skill = previewRuntimeApiSkills(previewSettings).find((candidate) => candidate.id === name || candidate.name === name);
+	      publishPreviewRuntimeApiStatus(runtimeApiStatuses);
+	      return { ok: true, skill };
+	    },
+	    listRuntimeApiMcpServers: async (settings = previewSettings) => ({
+	      ok: true,
+	      servers: previewRuntimeApiMcpServers({ ...previewSettings, ...settings })
+	    }),
+	    decideRuntimeApiApproval: async (payload) => {
+	      previewRuntimeApiStatus.pendingApprovals = previewRuntimeApiStatus.pendingApprovals.filter((approval) => (
+	        approval.id !== payload.approvalId && approval.approvalId !== payload.approvalId
+	      ));
+	      publishPreviewRuntimeApiStatus(runtimeApiStatuses);
+	      return { ok: true, result: { decision: payload.decision } };
+	    },
 	    getGitStatus: async (workspacePath) => previewGitStatus(workspacePath),
     initGitRepository: async (workspacePath) => ({ ok: true, status: previewGitStatus(workspacePath), output: "Initialized empty Git repository" }),
     setGitRemote: async (payload) => ({ ok: true, status: { ...previewGitStatus(payload.workspacePath), originUrl: payload.remoteUrl }, output: "" }),
@@ -924,6 +1023,10 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
 	    onRuntimeTurnEvent: (callback) => {
 	      runtimeTurnEvents.add(callback);
 	      return () => runtimeTurnEvents.delete(callback);
+	    },
+	    onRuntimeApiStatus: (callback) => {
+	      runtimeApiStatuses.add(callback);
+	      return () => runtimeApiStatuses.delete(callback);
 	    },
 	    onRemoteStatus: (callback) => {
       remoteStatuses.add(callback);

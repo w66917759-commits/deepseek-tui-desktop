@@ -14,7 +14,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "deepseek-tui": "0.8.16",
+    "deepseek-tui": "0.8.21",
     "lucide-react": "^0.468.0",
     "node-pty": "^1.1.0",
     "react": "^18.3.1",

@@ -24,7 +24,7 @@
 
 DeepSeek TUI Desktop is an **Electron desktop application** that wraps the open-source [`deepseek-tui`](https://www.npmjs.com/package/deepseek-tui) CLI coding agent. The CLI handles all terminal chat, file tools, shell tools, MCP, skills, sessions, sub-agents, and approval behavior. The desktop app provides a graphical shell around it — a Codex-style conversation UI, managed settings, preset MCP servers, skill management, scheduled tasks, and optional mobile bridge.
 
-The runtime is bundled: `deepseek-tui` downloads the upstream `deepseek` binary during `npm install`, and the desktop harness runs it inside a `node-pty` terminal session. No agent-loop behavior is forked or re-implemented.
+The runtime is bundled: `deepseek-tui` downloads the upstream `deepseek` binary during `npm install`, and the desktop harness runs it inside a `node-pty` terminal session. No agent-loop behavior is forked or re-implemented. The desktop app also starts the upstream Runtime HTTP API (`deepseek serve --http`) as a local AppService for health, runtime info, Skills, MCP server status, and approval events; main chat still uses the existing CLI runner.
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -69,6 +69,7 @@ The CLI is fully functional on its own. The desktop layer adds:
 
 - **Graphical conversation UI** — Codex-style layout with left history sidebar (grouped by project/workspace), right conversation surface, and hidden-on-demand drawers for Skills, MCP, workspace, and runtime settings.
 - **Model selection** — Top-level UI switch between DeepSeek V4 Pro, V4 Pro 1M, V4 Flash, and V4 Flash 1M. NVIDIA NIM provider also supported.
+- **DeepSeek endpoint selector** — Stable (`https://api.deepseek.com`) remains the default; beta (`https://api.deepseek.com/beta`) and custom Base URL are explicit advanced choices. NVIDIA NIM keeps its separate Base URL field.
 - **xterm.js terminal** — The upstream TUI runs inside a real PTY backed by `node-pty`, preserving keyboard control, colors, resizing, and prompts. No terminal emulation shortcuts.
 - **Workspace picker** — Mapped to `deepseek --workspace <path>`. Workspace-aware with `rememberWorkspace` persistence.
 - **One-click IDE handoff** — Open the current workspace in Cursor or VS Code from the desktop UI. On macOS it opens the installed app directly; on other platforms it uses the `cursor` / `code` command if available.
@@ -176,11 +177,14 @@ The desktop app does **not** fork the agent loop. The upstream CLI handles all r
 - **Preload bridge** (`electron/preload.cjs`) — narrow IPC boundary between renderer and main.
 - **Main process** (`electron/main.cjs`) — owns windows and dialogs, delegates runtime work to the harness.
 - **Harness** (`electron/harness.cjs`) — resolves the `deepseek` binary, normalizes workspace, builds launch plans, applies env policy, starts/stops PTY sessions, emits terminal events.
+- **AppService wrapper** (`electron/runtimeApiService.cjs`) — starts `deepseek serve --http` on `127.0.0.1` with a generated bearer token, then exposes runtime info, Skills, MCP server status, and approval decisions over IPC.
 - **Runtime state** (`electron/runtimeState.cjs`) — structured tracking of active agent runs.
 - **Remote bridge** (`electron/remoteBridge.cjs`) — optional HTTP/SSE server for mobile client access.
 - **Skills** (`electron/skills/`) — bundled preset skill directories imported at first launch.
 
 Settings are saved under Electron `userData`. API keys and conversation terminal output are **not** persisted to settings or history files.
+
+Upstream `deepseek-tui` supports generic OpenAI-compatible provider configuration through its runtime/config surface. The desktop UI currently exposes only DeepSeek and NVIDIA NIM directly; other OpenAI-compatible models should be wired through upstream config or a custom runtime until the desktop provider UI is expanded.
 
 For detailed architecture notes, see [`docs/architecture.md`](docs/architecture.md).
 
@@ -207,7 +211,7 @@ Full endpoint documentation and phone app flow in [`docs/mobile-remote-api.md`](
 - **Frontend**: [React](https://react.dev/) 18 + [TypeScript](https://www.typescriptlang.org/) + [Vite](https://vitejs.dev/) 6
 - **Terminal**: [xterm.js](https://xtermjs.org/) 5 + [node-pty](https://github.com/tyriar/node-pty)
 - **Icons**: [Lucide React](https://lucide.dev/)
-- **CLI agent**: [`deepseek-tui`](https://www.npmjs.com/package/deepseek-tui) 0.8
+- **CLI agent**: [`deepseek-tui`](https://www.npmjs.com/package/deepseek-tui) 0.8.21
 - **Packaging**: [electron-builder](https://www.electron.build/) 25 (macOS DMG, Windows NSIS)
 
 ## License

@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
   getRuntimeOrchestratorSnapshot: () => ipcRenderer.invoke("runtime:orchestratorSnapshot"),
   startRuntimeTurn: (payload) => ipcRenderer.invoke("runtime:startTurn", payload),
   cancelRuntimeTurn: (payload) => ipcRenderer.invoke("runtime:cancelTurn", payload),
+  getRuntimeApiStatus: (settings) => ipcRenderer.invoke("runtimeApi:getStatus", settings),
+  getRuntimeApiInfo: (settings) => ipcRenderer.invoke("runtimeApi:getInfo", settings),
+  listRuntimeApiSkills: (settings) => ipcRenderer.invoke("runtimeApi:listSkills", settings),
+  setRuntimeApiSkillEnabled: (payload) => ipcRenderer.invoke("runtimeApi:setSkillEnabled", payload),
+  listRuntimeApiMcpServers: (settings) => ipcRenderer.invoke("runtimeApi:listMcpServers", settings),
+  decideRuntimeApiApproval: (payload) => ipcRenderer.invoke("runtimeApi:decideApproval", payload),
   getGitStatus: (workspacePath) => ipcRenderer.invoke("git:status", workspacePath),
   initGitRepository: (workspacePath) => ipcRenderer.invoke("git:init", workspacePath),
   setGitRemote: (payload) => ipcRenderer.invoke("git:set-remote", payload),
@@ -77,6 +83,11 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
     const listener = (_event, event) => callback(event);
     ipcRenderer.on("runtime:turnEvent", listener);
     return () => ipcRenderer.removeListener("runtime:turnEvent", listener);
+  },
+  onRuntimeApiStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on("runtimeApi:status", listener);
+    return () => ipcRenderer.removeListener("runtimeApi:status", listener);
   },
   onRemoteStatus: (callback) => {
     const listener = (_event, status) => callback(status);

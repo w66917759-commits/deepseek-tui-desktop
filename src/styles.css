@@ -2806,6 +2806,213 @@ button.skill-card:hover {
   line-height: 1.4;
 }
 
+.runtime-api-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.runtime-api-panel.connected {
+  border-color: #b9e2d7;
+}
+
+.runtime-api-head {
+  align-items: flex-start;
+}
+
+.runtime-api-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runtime-api-message {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 12px;
+}
+
+.runtime-api-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.runtime-api-column {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid #edf0f4;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.runtime-api-column-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #18212c;
+}
+
+.runtime-api-column-title strong {
+  font-size: 12px;
+}
+
+.runtime-api-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 7px 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.runtime-api-kv span,
+.runtime-api-empty,
+.runtime-api-approvals,
+.runtime-api-row small {
+  color: #667085;
+  font-size: 11px;
+}
+
+.runtime-api-kv code,
+.endpoint-url-preview {
+  overflow: hidden;
+  color: #344054;
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-api-list {
+  display: grid;
+  gap: 7px;
+}
+
+.runtime-api-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #e6e9ef;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #18212c;
+  text-align: left;
+}
+
+button.runtime-api-row {
+  cursor: pointer;
+}
+
+.runtime-api-row.enabled {
+  border-color: #c3e9dd;
+  background: #f5fbf8;
+}
+
+.runtime-api-row span:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.runtime-api-row strong,
+.runtime-api-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-api-row strong {
+  font-size: 12px;
+}
+
+.runtime-api-approvals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.runtime-api-approval-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.status-chip.runtime-api-status.connected {
+  background: #dff6ef;
+  color: #0e8f6e;
+}
+
+.status-chip.runtime-api-status.starting {
+  background: #e8f2ff;
+  color: #0b63ce;
+}
+
+.status-chip.runtime-api-status.error {
+  background: #fff1f0;
+  color: #b42318;
+}
+
+.endpoint-selector {
+  display: grid;
+  gap: 8px;
+}
+
+.field-label {
+  color: #344054;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.endpoint-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.endpoint-segmented button {
+  min-height: 34px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.endpoint-segmented button.active {
+  border-color: rgba(0, 122, 255, 0.30);
+  background: rgba(0, 122, 255, 0.08);
+  color: #0b63ce;
+}
+
+.endpoint-url-preview {
+  display: block;
+  padding: 9px 10px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
 .tool-grid,
 .skill-grid {
   display: grid;
@@ -3658,6 +3865,7 @@ button.skill-card:hover {
   .dashboard-grid,
   .tool-grid,
   .skill-grid,
+  .runtime-api-grid,
   .git-meta-grid,
   .git-actions,
   .automation-time-grid,

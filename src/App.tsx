@@ -58,6 +58,7 @@ type InspectorPanel = "skills" | "remote" | "git" | "settings" | null;
 type MainView = "chat" | "tools" | "tasks" | "terminal";
 type ToolPage = "overview" | "skills" | "mcp";
 type PermissionMode = "plan" | "agent" | "yolo";
+type DeepSeekEndpointMode = "stable" | "beta" | "custom";
 type StatusState =
   | { type: "ready" }
   | { type: "launching" }
@@ -151,6 +152,7 @@ interface McpSecretTarget {
 }
 
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+const DEEPSEEK_BETA_BASE_URL = "https://api.deepseek.com/beta";
 const NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
 const DEEPSEEK_V4_RELEASE_DOC_URL = "https://api-docs.deepseek.com/news/news260424";
@@ -617,6 +619,27 @@ const uiCopy = {
       skillsDesc: "Skills 是可新增、导入和勾选的 Markdown 指令，告诉 Agent 遇到某类任务时该怎么做。",
       manageSkills: "管理 Skills"
 	    },
+	    runtimeApi: {
+	      title: "AppService",
+	      subtitle: "上游 Runtime HTTP API 已渐进接入；主对话仍使用现有 CLI runner。",
+	      connected: "已连接",
+	      starting: "启动中",
+	      idle: "未启动",
+	      stopped: "已停止",
+	      error: "异常",
+	      refresh: "刷新",
+	      runtimeInfo: "Runtime 信息",
+	      skills: "Skills 状态",
+	      mcp: "MCP Servers",
+	      approvals: "审批事件",
+	      noSkills: "Runtime API 暂未返回 Skill。",
+	      noMcp: "Runtime API 暂未返回 MCP server。",
+	      noApprovals: "暂无待处理审批。",
+	      authRequired: "Bearer token 已启用",
+	      authOff: "未启用鉴权",
+	      unavailable: "Runtime API 不可用，主聊天 CLI runner 不受影响。",
+	      toggleFailed: "Skill 状态更新失败"
+	    },
 	    terminal: {
 	      streamTitle: "流式输出",
 	      clear: "清空输出",
@@ -916,6 +939,11 @@ const uiCopy = {
       advancedRuntimeHint: "默认使用内置 DeepSeek TUI。只有需要切换 provider、运行路径或高级模型时再打开。",
       advancedModel: "高级模型",
       provider: "Provider",
+      endpoint: "DeepSeek Endpoint",
+      endpointStable: "正式版",
+      endpointBeta: "测试版",
+      endpointCustom: "自定义",
+      endpointHint: "正式版保持默认；测试版和自定义只影响 DeepSeek provider。",
       model: "Model",
       modelDoc: "官方文档",
       apiModel: (model: string) => `API model：${model}`,
@@ -1051,6 +1079,27 @@ const uiCopy = {
       selected: "Selected",
       skillsDesc: "Skills are Markdown instructions you can create, import, and enable for specific work.",
       manageSkills: "Manage Skills"
+	    },
+	    runtimeApi: {
+	      title: "AppService",
+	      subtitle: "The upstream Runtime HTTP API is connected incrementally; main chat still uses the existing CLI runner.",
+	      connected: "Connected",
+	      starting: "Starting",
+	      idle: "Idle",
+	      stopped: "Stopped",
+	      error: "Error",
+	      refresh: "Refresh",
+	      runtimeInfo: "Runtime info",
+	      skills: "Skills status",
+	      mcp: "MCP servers",
+	      approvals: "Approval events",
+	      noSkills: "Runtime API has not returned skills.",
+	      noMcp: "Runtime API has not returned MCP servers.",
+	      noApprovals: "No pending approvals.",
+	      authRequired: "Bearer token enabled",
+	      authOff: "Auth disabled",
+	      unavailable: "Runtime API is unavailable; the main chat CLI runner is unaffected.",
+	      toggleFailed: "Skill update failed"
 	    },
 	    terminal: {
 	      streamTitle: "Streaming output",
@@ -1351,6 +1400,11 @@ const uiCopy = {
       advancedRuntimeHint: "The bundled DeepSeek TUI runtime is used by default. Open only when changing provider, runtime path, or advanced model choices.",
       advancedModel: "Advanced model",
       provider: "Provider",
+      endpoint: "DeepSeek Endpoint",
+      endpointStable: "Stable",
+      endpointBeta: "Beta",
+      endpointCustom: "Custom",
+      endpointHint: "Stable remains the default; beta and custom only affect the DeepSeek provider.",
       model: "Model",
       modelDoc: "Official docs",
       apiModel: (model: string) => `API model: ${model}`,
@@ -1503,6 +1557,19 @@ function createId() {
 
 function defaultBaseUrlForProvider(provider: ProviderMode) {
   return provider === "nvidia-nim" ? NVIDIA_NIM_BASE_URL : DEEPSEEK_BASE_URL;
+}
+
+function deepSeekEndpointModeForBaseUrl(baseUrl: string): DeepSeekEndpointMode {
+  const normalized = String(baseUrl || "").trim().replace(/\/+$/, "");
+  if (!normalized || normalized === DEEPSEEK_BASE_URL) return "stable";
+  if (normalized === DEEPSEEK_BETA_BASE_URL) return "beta";
+  return "custom";
+}
+
+function baseUrlForDeepSeekEndpointMode(mode: DeepSeekEndpointMode, currentBaseUrl: string) {
+  if (mode === "stable") return DEEPSEEK_BASE_URL;
+  if (mode === "beta") return DEEPSEEK_BETA_BASE_URL;
+  return currentBaseUrl || DEEPSEEK_BASE_URL;
 }
 
 function normalizeSettings(settings: DesktopSettings): DesktopSettings {
@@ -2135,6 +2202,12 @@ function App() {
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<RuntimeSnapshot>(() => createEmptyRuntimeSnapshot());
   const [runtimeOrchestratorSnapshot, setRuntimeOrchestratorSnapshot] = useState<RuntimeOrchestratorSnapshot>(() => createEmptyRuntimeOrchestratorSnapshot());
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEvent[]>([]);
+  const [runtimeApiStatus, setRuntimeApiStatus] = useState<RuntimeApiStatus | null>(null);
+  const [runtimeApiInfo, setRuntimeApiInfo] = useState<RuntimeApiInfo | null>(null);
+  const [runtimeApiSkills, setRuntimeApiSkills] = useState<RuntimeApiSkill[]>([]);
+  const [runtimeApiMcpServers, setRuntimeApiMcpServers] = useState<RuntimeApiMcpServer[]>([]);
+  const [runtimeApiLoading, setRuntimeApiLoading] = useState(false);
+  const [runtimeApiMessage, setRuntimeApiMessage] = useState("");
   const [remoteStatus, setRemoteStatus] = useState<RemoteBridgeStatus | null>(null);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<StatusState>({ type: "ready" });
@@ -2198,6 +2271,10 @@ function App() {
   const selectedModelPreset = useMemo(
     () => settings.provider === "deepseek" ? modelPresetForValue(settings.model) : null,
     [settings.model, settings.provider]
+  );
+  const deepSeekEndpointMode = useMemo(
+    () => deepSeekEndpointModeForBaseUrl(settings.baseUrl),
+    [settings.baseUrl]
   );
   const selectedModelApiName = apiModelForProvider(settings.provider, settings.model);
   const selectedModelDocsLabel = selectedModelPreset
@@ -3050,6 +3127,81 @@ function App() {
     }));
   }, []);
 
+  const updateDeepSeekEndpointMode = useCallback((mode: DeepSeekEndpointMode) => {
+    setSettings((current) => ({
+      ...current,
+      baseUrl: baseUrlForDeepSeekEndpointMode(mode, current.baseUrl)
+    }));
+  }, []);
+
+  const refreshRuntimeApi = useCallback(async () => {
+    setRuntimeApiLoading(true);
+    setRuntimeApiMessage("");
+    try {
+      const statusResult = await desktop.getRuntimeApiStatus(settings);
+      setRuntimeApiStatus(statusResult);
+      if (statusResult.info) {
+        setRuntimeApiInfo(statusResult.info);
+      }
+      if (!statusResult.connected) {
+        setRuntimeApiMessage(statusResult.error || t.runtimeApi.unavailable);
+        return;
+      }
+      const [infoResult, skillsResult, mcpResult] = await Promise.allSettled([
+        desktop.getRuntimeApiInfo(settings),
+        desktop.listRuntimeApiSkills(settings),
+        desktop.listRuntimeApiMcpServers(settings)
+      ]);
+      if (infoResult.status === "fulfilled" && infoResult.value.ok && infoResult.value.info) {
+        setRuntimeApiInfo(infoResult.value.info);
+      }
+      if (skillsResult.status === "fulfilled" && skillsResult.value.ok) {
+        setRuntimeApiSkills(skillsResult.value.skills);
+      }
+      if (mcpResult.status === "fulfilled" && mcpResult.value.ok) {
+        setRuntimeApiMcpServers(mcpResult.value.servers);
+      }
+      const rejected = [infoResult, skillsResult, mcpResult].find((result) => result.status === "rejected");
+      if (rejected?.status === "rejected") {
+        setRuntimeApiMessage(rejected.reason instanceof Error ? rejected.reason.message : String(rejected.reason || t.runtimeApi.unavailable));
+      }
+    } catch (error) {
+      setRuntimeApiMessage(error instanceof Error ? error.message : String(error || t.runtimeApi.unavailable));
+    } finally {
+      setRuntimeApiLoading(false);
+    }
+  }, [desktop, settings, t]);
+
+  const toggleRuntimeApiSkill = useCallback(async (skill: RuntimeApiSkill) => {
+    const result = await desktop.setRuntimeApiSkillEnabled({
+      name: skill.name || skill.id,
+      enabled: !skill.enabled,
+      settings
+    });
+    if (!result.ok) {
+      setRuntimeApiMessage(result.error || t.runtimeApi.toggleFailed);
+      return;
+    }
+    await refreshRuntimeApi();
+  }, [desktop, refreshRuntimeApi, settings, t]);
+
+  useEffect(() => {
+    return desktop.onRuntimeApiStatus((nextStatus) => {
+      setRuntimeApiStatus(nextStatus);
+      if (nextStatus.info) {
+        setRuntimeApiInfo(nextStatus.info);
+      }
+    });
+  }, [desktop]);
+
+  useEffect(() => {
+    if (mainView !== "tools" && inspectorPanel !== "settings") return;
+    const timer = window.setTimeout(() => {
+      void refreshRuntimeApi();
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [inspectorPanel, mainView, refreshRuntimeApi]);
+
   const launch = useCallback(async (
     action?: LaunchAction,
     promptOverride?: string,
@@ -3769,6 +3921,134 @@ function App() {
     </section>
   );
   const renderMcpTestSection = (servers: McpServerTest[] | null) => (servers ? renderMcpTestList(servers) : null);
+  const runtimeApiState = runtimeApiStatus?.state || "idle";
+  const runtimeApiStateText = t.runtimeApi[runtimeApiState];
+  const runtimeApiUrl = runtimeApiStatus?.url || (runtimeApiInfo?.port ? `http://127.0.0.1:${runtimeApiInfo.port}` : "");
+  const runtimeApiPendingApprovals = runtimeApiStatus?.pendingApprovals || [];
+  const runtimeApiPanel = (
+    <section className={runtimeApiStatus?.connected ? "runtime-api-panel connected" : "runtime-api-panel"}>
+      <div className="tool-section-head runtime-api-head">
+        <div>
+          <h3>{t.runtimeApi.title}</h3>
+          <p>{t.runtimeApi.subtitle}</p>
+        </div>
+        <div className="runtime-api-actions">
+          <span className={`status-chip runtime-api-status ${runtimeApiState}`}>
+            {runtimeApiLoading ? t.runtimeApi.starting : runtimeApiStateText}
+          </span>
+          <button type="button" className="secondary" onClick={refreshRuntimeApi} disabled={runtimeApiLoading}>
+            <RefreshCw size={16} aria-hidden />
+            {t.runtimeApi.refresh}
+          </button>
+        </div>
+      </div>
+      {runtimeApiMessage ? (
+        <p className="runtime-api-message">
+          <CircleAlert size={15} aria-hidden />
+          {runtimeApiMessage}
+        </p>
+      ) : null}
+      <div className="runtime-api-grid">
+        <article className="runtime-api-column">
+          <div className="runtime-api-column-title">
+            <Server size={16} aria-hidden />
+            <strong>{t.runtimeApi.runtimeInfo}</strong>
+          </div>
+          <div className="runtime-api-kv">
+            <span>URL</span>
+            <code>{runtimeApiUrl || "-"}</code>
+            <span>Version</span>
+            <code>{String(runtimeApiInfo?.version || runtimeApiStatus?.info?.version || "-")}</code>
+            <span>Auth</span>
+            <code>{runtimeApiInfo?.auth_required || runtimeApiStatus?.info?.auth_required ? t.runtimeApi.authRequired : t.runtimeApi.authOff}</code>
+          </div>
+        </article>
+
+        <article className="runtime-api-column">
+          <div className="runtime-api-column-title">
+            <BookOpen size={16} aria-hidden />
+            <strong>{t.runtimeApi.skills}</strong>
+          </div>
+          {runtimeApiSkills.length > 0 ? (
+            <div className="runtime-api-list">
+              {runtimeApiSkills.slice(0, 6).map((skill) => (
+                <button
+                  type="button"
+                  key={skill.id || skill.name}
+                  className={skill.enabled ? "runtime-api-row enabled" : "runtime-api-row"}
+                  onClick={() => toggleRuntimeApiSkill(skill)}
+                >
+                  <span>
+                    <strong>{skill.name || skill.id}</strong>
+                    <small>{skill.description || skill.path || ""}</small>
+                  </span>
+                  <span className={skill.enabled ? "switch on" : "switch"} />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="runtime-api-empty">{t.runtimeApi.noSkills}</p>
+          )}
+        </article>
+
+        <article className="runtime-api-column">
+          <div className="runtime-api-column-title">
+            <Plug size={16} aria-hidden />
+            <strong>{t.runtimeApi.mcp}</strong>
+          </div>
+          {runtimeApiMcpServers.length > 0 ? (
+            <div className="runtime-api-list compact">
+              {runtimeApiMcpServers.slice(0, 6).map((server) => (
+                <div key={server.id || server.name} className={server.enabled ? "runtime-api-row enabled" : "runtime-api-row"}>
+                  <span>
+                    <strong>{server.name || server.id}</strong>
+                    <small>{server.status || server.command || server.url || ""}</small>
+                  </span>
+                  {server.enabled ? <CheckCircle2 size={15} aria-hidden /> : <CircleAlert size={15} aria-hidden />}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="runtime-api-empty">{t.runtimeApi.noMcp}</p>
+          )}
+        </article>
+      </div>
+      <div className="runtime-api-approvals">
+        <strong>{t.runtimeApi.approvals}</strong>
+        {runtimeApiPendingApprovals.length > 0 ? (
+          runtimeApiPendingApprovals.map((approval) => (
+            <div key={approval.id || approval.approvalId || approval.title} className="runtime-api-approval-row">
+              <span>{approval.title || approval.message || approval.action || approval.id || approval.approvalId}</span>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => desktop.decideRuntimeApiApproval({
+                  approvalId: String(approval.id || approval.approvalId || ""),
+                  decision: "deny",
+                  settings
+                })}
+              >
+                {language === "zh" ? "拒绝" : "Deny"}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => desktop.decideRuntimeApiApproval({
+                  approvalId: String(approval.id || approval.approvalId || ""),
+                  decision: "allow",
+                  settings
+                })}
+              >
+                {language === "zh" ? "允许" : "Allow"}
+              </button>
+            </div>
+          ))
+        ) : (
+          <span>{t.runtimeApi.noApprovals}</span>
+        )}
+      </div>
+    </section>
+  );
   const parentRuntimeTurns = runtimeOrchestratorSnapshot.turns
     .filter((turn) => turn.status === "queued" || turn.status === "running" || turn.status === "cancelling");
   const visibleRuntimeAgents = runtimeSnapshot.agents;
@@ -4664,6 +4944,8 @@ function App() {
                   </article>
                 </div>
 
+                {runtimeApiPanel}
+
                 <div className="tool-section-head">
                   <div>
                     <h3>{t.tools.mcpStatus}</h3>
@@ -5554,15 +5836,55 @@ function App() {
                     <code>{t.settings.apiModel(selectedModelApiName)}</code>
                   </a>
                 ) : null}
-                <label>
-                  {t.settings.baseUrl}
-                  <input
-                    value={settings.baseUrl}
-                    onChange={(event) => updateSetting("baseUrl", event.target.value)}
-                    placeholder={defaultBaseUrlForProvider(settings.provider)}
-                    spellCheck={false}
-                  />
-                </label>
+                {settings.provider === "deepseek" ? (
+                  <section className="endpoint-selector">
+                    <div className="field-label">{t.settings.endpoint}</div>
+                    <div className="endpoint-segmented">
+                      <button
+                        type="button"
+                        className={deepSeekEndpointMode === "stable" ? "active" : ""}
+                        onClick={() => updateDeepSeekEndpointMode("stable")}
+                      >
+                        {t.settings.endpointStable}
+                      </button>
+                      <button
+                        type="button"
+                        className={deepSeekEndpointMode === "beta" ? "active" : ""}
+                        onClick={() => updateDeepSeekEndpointMode("beta")}
+                      >
+                        {t.settings.endpointBeta}
+                      </button>
+                      <button
+                        type="button"
+                        className={deepSeekEndpointMode === "custom" ? "active" : ""}
+                        onClick={() => updateDeepSeekEndpointMode("custom")}
+                      >
+                        {t.settings.endpointCustom}
+                      </button>
+                    </div>
+                    {deepSeekEndpointMode === "custom" ? (
+                      <input
+                        value={settings.baseUrl}
+                        onChange={(event) => updateSetting("baseUrl", event.target.value)}
+                        placeholder={DEEPSEEK_BASE_URL}
+                        spellCheck={false}
+                      />
+                    ) : (
+                      <code className="endpoint-url-preview">{settings.baseUrl || DEEPSEEK_BASE_URL}</code>
+                    )}
+                    <small className="field-hint">{t.settings.endpointHint}</small>
+                  </section>
+                ) : (
+                  <label>
+                    {t.settings.baseUrl}
+                    <input
+                      value={settings.baseUrl}
+                      onChange={(event) => updateSetting("baseUrl", event.target.value)}
+                      placeholder={defaultBaseUrlForProvider(settings.provider)}
+                      spellCheck={false}
+                    />
+                  </label>
+                )}
                 <div className="two-col">
                   <label className="check-row">
                     <input

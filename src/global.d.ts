@@ -29,6 +29,12 @@ declare global {
 	      getRuntimeOrchestratorSnapshot: () => Promise<RuntimeOrchestratorSnapshot>;
 	      startRuntimeTurn: (payload: RuntimeTurnStartPayload) => Promise<RuntimeTurnStartResult>;
 	      cancelRuntimeTurn: (payload: RuntimeTurnCancelPayload) => Promise<RuntimeTurnCancelResult>;
+	      getRuntimeApiStatus: (settings?: DesktopSettings) => Promise<RuntimeApiStatus>;
+	      getRuntimeApiInfo: (settings?: DesktopSettings) => Promise<RuntimeApiInfoResult>;
+	      listRuntimeApiSkills: (settings?: DesktopSettings) => Promise<RuntimeApiSkillsResult>;
+	      setRuntimeApiSkillEnabled: (payload: RuntimeApiSkillTogglePayload) => Promise<RuntimeApiSkillActionResult>;
+	      listRuntimeApiMcpServers: (settings?: DesktopSettings) => Promise<RuntimeApiMcpServersResult>;
+	      decideRuntimeApiApproval: (payload: RuntimeApiApprovalDecisionPayload) => Promise<RuntimeApiActionResult>;
 	      getGitStatus: (workspacePath: string) => Promise<GitStatus>;
       initGitRepository: (workspacePath: string) => Promise<GitActionResult>;
       setGitRemote: (payload: GitRemotePayload) => Promise<GitActionResult>;
@@ -56,6 +62,7 @@ declare global {
 	      onRuntimeEvent: (callback: (event: RuntimeEvent) => void) => () => void;
 	      onRuntimeOrchestratorSnapshot: (callback: (snapshot: RuntimeOrchestratorSnapshot) => void) => () => void;
 	      onRuntimeTurnEvent: (callback: (event: RuntimeTurnEvent) => void) => () => void;
+	      onRuntimeApiStatus: (callback: (status: RuntimeApiStatus) => void) => () => void;
 	      onRemoteStatus: (callback: (status: RemoteBridgeStatus) => void) => () => void;
 	    };
   }
@@ -468,6 +475,115 @@ declare global {
 	    delta?: string;
 	    message?: string;
 	    source?: string;
+	  }
+
+	  type RuntimeApiConnectionState = "idle" | "starting" | "connected" | "error" | "stopped";
+
+	  interface RuntimeApiInfo {
+	    bind_host?: string;
+	    port?: number;
+	    auth_required?: boolean;
+	    version?: string;
+	    [key: string]: unknown;
+	  }
+
+	  interface RuntimeApiHealth {
+	    status?: string;
+	    service?: string;
+	    mode?: string;
+	    [key: string]: unknown;
+	  }
+
+	  interface RuntimeApiApproval {
+	    id?: string;
+	    approvalId?: string;
+	    title?: string;
+	    message?: string;
+	    action?: string;
+	    [key: string]: unknown;
+	  }
+
+	  interface RuntimeApiStatus {
+	    state: RuntimeApiConnectionState;
+	    connected: boolean;
+	    host: string;
+	    port: number;
+	    url: string;
+	    pid: number;
+	    startedAt: string;
+	    updatedAt: string;
+	    error: string;
+	    info: RuntimeApiInfo | null;
+	    health: RuntimeApiHealth | null;
+	    lastStdout: string;
+	    lastStderr: string;
+	    pendingApprovals: RuntimeApiApproval[];
+	  }
+
+	  interface RuntimeApiInfoResult {
+	    ok: boolean;
+	    info?: RuntimeApiInfo;
+	    error?: string;
+	  }
+
+	  interface RuntimeApiSkill {
+	    id: string;
+	    name: string;
+	    enabled: boolean;
+	    description?: string;
+	    path?: string;
+	    [key: string]: unknown;
+	  }
+
+	  interface RuntimeApiSkillsResult {
+	    ok: boolean;
+	    directory?: string;
+	    warnings: string[];
+	    skills: RuntimeApiSkill[];
+	    error?: string;
+	  }
+
+	  interface RuntimeApiSkillTogglePayload {
+	    name: string;
+	    enabled: boolean;
+	    settings?: DesktopSettings;
+	  }
+
+	  interface RuntimeApiSkillActionResult {
+	    ok: boolean;
+	    skill?: RuntimeApiSkill;
+	    error?: string;
+	    result?: unknown;
+	  }
+
+	  interface RuntimeApiMcpServer {
+	    id: string;
+	    name: string;
+	    enabled: boolean;
+	    status?: string;
+	    command?: string;
+	    url?: string;
+	    [key: string]: unknown;
+	  }
+
+	  interface RuntimeApiMcpServersResult {
+	    ok: boolean;
+	    servers: RuntimeApiMcpServer[];
+	    error?: string;
+	    result?: unknown;
+	  }
+
+	  interface RuntimeApiApprovalDecisionPayload {
+	    approvalId: string;
+	    decision: "allow" | "deny";
+	    remember?: boolean;
+	    settings?: DesktopSettings;
+	  }
+
+	  interface RuntimeApiActionResult {
+	    ok: boolean;
+	    error?: string;
+	    result?: unknown;
 	  }
 
   interface GitRemoteInfo {
