@@ -495,6 +495,7 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
   const runtimeTurnEvents = new Set<(event: RuntimeTurnEvent) => void>();
   const runtimeApiStatuses = new Set<(status: RuntimeApiStatus) => void>();
   const remoteStatuses = new Set<(status: RemoteBridgeStatus) => void>();
+  const desktopUpdateListeners = new Set<(update: DesktopUpdateInfo) => void>();
   let previewAuth: RemoteAuthState = {
     desktopId: "desktop_preview",
     loggedIn: false,
@@ -536,6 +537,11 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
       }
       return { ok: false, error: "Invalid URL" };
     },
+    checkDesktopUpdate: async () => ({
+      ok: true,
+      currentVersion: "0.1.2",
+      update: null
+    }),
     saveSettings: async (settings) => {
 	      Object.assign(previewSettings, settings);
 	      previewSettings.model = previewSettings.provider === "deepseek"
@@ -1031,6 +1037,10 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
 	    onRemoteStatus: (callback) => {
       remoteStatuses.add(callback);
       return () => remoteStatuses.delete(callback);
+    },
+    onDesktopUpdateAvailable: (callback) => {
+      desktopUpdateListeners.add(callback);
+      return () => desktopUpdateListeners.delete(callback);
     }
   };
 }

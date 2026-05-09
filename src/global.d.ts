@@ -5,6 +5,7 @@ declare global {
     deepseekDesktop: {
 	      getSettings: () => Promise<DesktopSettings>;
 	      openExternal: (url: string) => Promise<{ ok: boolean; url?: string; error?: string }>;
+	      checkDesktopUpdate: (options?: DesktopUpdateCheckOptions) => Promise<DesktopUpdateCheckResult>;
 	      saveSettings: (settings: DesktopSettings) => Promise<DesktopSettings>;
 	      getApiKey: (provider?: ProviderMode) => Promise<string>;
 	      saveApiKey: (payload: ApiKeySavePayload) => Promise<ApiKeySaveResult>;
@@ -64,6 +65,7 @@ declare global {
 	      onRuntimeTurnEvent: (callback: (event: RuntimeTurnEvent) => void) => () => void;
 	      onRuntimeApiStatus: (callback: (status: RuntimeApiStatus) => void) => () => void;
 	      onRemoteStatus: (callback: (status: RemoteBridgeStatus) => void) => () => void;
+	      onDesktopUpdateAvailable: (callback: (update: DesktopUpdateInfo) => void) => () => void;
 	    };
   }
 
@@ -74,6 +76,28 @@ declare global {
   type WorkspaceEditor = "cursor" | "vscode";
   type AutomationFrequency = "hourly" | "daily" | "weekly" | "custom";
   type AutomationStatus = "ACTIVE" | "PAUSED";
+
+  interface DesktopUpdateCheckOptions {
+    silent?: boolean;
+  }
+
+  interface DesktopUpdateInfo {
+    currentVersion: string;
+    version: string;
+    tagName: string;
+    name: string;
+    releaseUrl: string;
+    downloadUrl: string;
+    assetName: string;
+    publishedAt: string;
+  }
+
+  interface DesktopUpdateCheckResult {
+    ok: boolean;
+    currentVersion: string;
+    update: DesktopUpdateInfo | null;
+    error?: string;
+  }
 
   interface OpenWorkspaceEditorOptions {
     editor: WorkspaceEditor;

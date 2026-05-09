@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("deepseekDesktop", {
   getSettings: () => ipcRenderer.invoke("settings:get"),
   openExternal: (url) => ipcRenderer.invoke("app:open-external", url),
+  checkDesktopUpdate: (options) => ipcRenderer.invoke("desktopUpdate:check", options),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
   getApiKey: (provider) => ipcRenderer.invoke("api-key:get", provider),
   saveApiKey: (payload) => ipcRenderer.invoke("api-key:save", payload),
@@ -93,5 +94,10 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("remote:status", listener);
     return () => ipcRenderer.removeListener("remote:status", listener);
+  },
+  onDesktopUpdateAvailable: (callback) => {
+    const listener = (_event, update) => callback(update);
+    ipcRenderer.on("desktopUpdate:available", listener);
+    return () => ipcRenderer.removeListener("desktopUpdate:available", listener);
   }
 });

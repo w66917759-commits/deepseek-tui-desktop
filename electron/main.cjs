@@ -1,5 +1,6 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Notification, dialog, ipcMain, shell } = require("electron");
 const fs = require("fs");
+const https = require("https");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { DeepSeekDesktopHarness } = require("./harness.cjs");
@@ -17,6 +18,13 @@ let runtimeApiService = null;
 
 const isDev = !app.isPackaged;
 const DEFAULT_RUNTIME_SESSION_CONCURRENCY = 8;
+const DESKTOP_UPDATE_REPO = "w66917759-commits/deepseek-tui-desktop";
+const DESKTOP_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const DESKTOP_UPDATE_INITIAL_DELAY_MS = 8_000;
+
+let desktopUpdateTimer = null;
+let desktopUpdateInitialTimer = null;
+let lastNotifiedDesktopUpdateTag = "";
 
 const EDITOR_OPENERS = {
   cursor: {
@@ -173,6 +181,153 @@ function sendRemoteStatus() {
   }
 }
 
+function sendDesktopUpdateAvailable(update) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("desktopUpdate:available", update);
+  }
+}
+
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": `DeepSeek-TUI-Desktop/${app.getVersion()}`
+      },
+      timeout: 12_000
+    }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`HTTP ${response.statusCode || 0}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    request.on("timeout", () => {
+      request.destroy(new Error("Update check timed out."));
+    });
+    request.on("error", reject);
+  });
+}
+
+function versionParts(version) {
+  return String(version || "")
+    .trim()
+    .replace(/^v/i, "")
+    .split(/[.-]/)
+    .slice(0, 3)
+    .map((part) => {
+      const value = Number.parseInt(part, 10);
+      return Number.isFinite(value) ? value : 0;
+    });
+}
+
+function isNewerVersion(candidate, current) {
+  const next = versionParts(candidate);
+  const now = versionParts(current);
+  for (let index = 0; index < Math.max(next.length, now.length, 3); index += 1) {
+    const nextPart = next[index] || 0;
+    const nowPart = now[index] || 0;
+    if (nextPart > nowPart) return true;
+    if (nextPart < nowPart) return false;
+  }
+  return false;
+}
+
+function releaseToDesktopUpdate(release) {
+  const tagName = String(release?.tag_name || "");
+  const version = tagName.replace(/^v/i, "") || String(release?.name || "");
+  if (!tagName || !isNewerVersion(version, app.getVersion())) {
+    return null;
+  }
+
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const dmgAsset = assets.find((asset) => /\.dmg$/i.test(String(asset?.name || "")));
+  const releaseUrl = String(release.html_url || `https://github.com/${DESKTOP_UPDATE_REPO}/releases/tag/${tagName}`);
+  return {
+    currentVersion: app.getVersion(),
+    version,
+    tagName,
+    name: String(release.name || tagName),
+    releaseUrl,
+    downloadUrl: String(dmgAsset?.browser_download_url || releaseUrl),
+    assetName: String(dmgAsset?.name || ""),
+    publishedAt: String(release.published_at || release.created_at || "")
+  };
+}
+
+function notifyDesktopUpdate(update) {
+  if (!update || lastNotifiedDesktopUpdateTag === update.tagName) return;
+  lastNotifiedDesktopUpdateTag = update.tagName;
+  sendDesktopUpdateAvailable(update);
+
+  if (!Notification.isSupported()) return;
+  const notification = new Notification({
+    title: `DeepSeek TUI Desktop ${update.version}`,
+    body: "新版本已经发布，点击打开下载页面。"
+  });
+  notification.on("click", () => {
+    shell.openExternal(update.downloadUrl || update.releaseUrl).catch(() => undefined);
+  });
+  notification.show();
+}
+
+async function checkDesktopUpdate(options = {}) {
+  try {
+    const release = await fetchJson(`https://api.github.com/repos/${DESKTOP_UPDATE_REPO}/releases/latest`);
+    const update = releaseToDesktopUpdate(release);
+    if (update && !options.silent) {
+      notifyDesktopUpdate(update);
+    } else if (update) {
+      sendDesktopUpdateAvailable(update);
+    }
+    return {
+      ok: true,
+      currentVersion: app.getVersion(),
+      update
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      currentVersion: app.getVersion(),
+      update: null,
+      error: error instanceof Error ? error.message : String(error || "Update check failed.")
+    };
+  }
+}
+
+function startDesktopUpdateChecks() {
+  if (desktopUpdateTimer) return;
+  desktopUpdateInitialTimer = setTimeout(() => {
+    desktopUpdateInitialTimer = null;
+    checkDesktopUpdate({ silent: false }).catch(() => undefined);
+  }, DESKTOP_UPDATE_INITIAL_DELAY_MS);
+  desktopUpdateTimer = setInterval(() => {
+    checkDesktopUpdate({ silent: false }).catch(() => undefined);
+  }, DESKTOP_UPDATE_CHECK_INTERVAL_MS);
+}
+
+function stopDesktopUpdateChecks() {
+  if (desktopUpdateInitialTimer) {
+    clearTimeout(desktopUpdateInitialTimer);
+    desktopUpdateInitialTimer = null;
+  }
+  if (!desktopUpdateTimer) return;
+  clearInterval(desktopUpdateTimer);
+  desktopUpdateTimer = null;
+}
+
 function launchActionForTurnMode(mode) {
   if (mode === "plan") return "plan";
   if (mode === "yolo") return "yolo";
@@ -301,6 +456,10 @@ function registerIpc() {
       return { ok: false, error: error instanceof Error ? error.message : "Invalid URL" };
     }
   });
+
+  ipcMain.handle("desktopUpdate:check", (_event, payload = {}) => checkDesktopUpdate({
+    silent: Boolean(payload?.silent)
+  }));
 
   ipcMain.handle("settings:save", (_event, settings) => {
     const saved = harness.writeSettings(settings);
@@ -491,6 +650,7 @@ app.whenReady().then(() => {
   createWindow();
   registerIpc();
   remoteBridge.configure(harness.readSettings());
+  startDesktopUpdateChecks();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -500,6 +660,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  stopDesktopUpdateChecks();
   if (remoteBridge) {
     remoteBridge.stop();
   }

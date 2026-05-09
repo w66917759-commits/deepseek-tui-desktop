@@ -205,6 +205,7 @@ label {
 .history-tree {
   display: grid;
   gap: 14px;
+  align-content: start;
 }
 
 .history-scroll-shell {
@@ -358,6 +359,7 @@ label {
 .chat-list {
   display: grid;
   gap: 6px;
+  grid-auto-rows: 48px;
 }
 
 .project-group.collapsed .chat-list {
@@ -382,10 +384,13 @@ label {
   align-items: center;
   gap: 3px;
   width: 100%;
+  height: 48px;
   min-height: 48px;
+  max-height: 48px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
+  overflow: hidden;
 }
 
 .chat-list-item.active,
@@ -402,11 +407,14 @@ label {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  height: 46px;
   min-height: 46px;
+  max-height: 46px;
   padding: 0 8px;
   background: transparent;
   color: #344054;
   text-align: left;
+  overflow: hidden;
 }
 
 .chat-list-main span {
@@ -437,8 +445,11 @@ label {
 .chat-delete-button {
   display: grid;
   place-items: center;
+  width: 28px;
+  height: 32px;
   min-width: 28px;
   min-height: 32px;
+  max-height: 32px;
   margin-right: 4px;
   border-radius: 7px;
   background: transparent;
@@ -602,6 +613,21 @@ label {
   border-color: #b8e5d8;
   background: #eaf8f3;
   color: #0e8f6e;
+}
+
+.desktop-update-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid #bad0ff;
+  border-radius: 8px;
+  background: #f5f8ff;
+  color: #1d3f8f;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .branch-status-button {

@@ -598,6 +598,7 @@ const uiCopy = {
       chooseWorkspace: "选择 workspace",
       currentBranch: "当前分支",
       noBranch: "未检测到分支",
+      updateAvailable: (version: string) => `新版本 ${version}`,
       openCursor: "打开 Cursor",
       apiKeySaved: "API Key 已保存",
       apiKeyMissing: "设置 API Key",
@@ -1059,6 +1060,7 @@ const uiCopy = {
       chooseWorkspace: "Choose workspace",
       currentBranch: "Current branch",
       noBranch: "No branch detected",
+      updateAvailable: (version: string) => `Update ${version}`,
       openCursor: "Open Cursor",
       apiKeySaved: "API Key saved",
       apiKeyMissing: "Set API Key",
@@ -2209,6 +2211,7 @@ function App() {
   const [runtimeApiLoading, setRuntimeApiLoading] = useState(false);
   const [runtimeApiMessage, setRuntimeApiMessage] = useState("");
   const [remoteStatus, setRemoteStatus] = useState<RemoteBridgeStatus | null>(null);
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateInfo | null>(null);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<StatusState>({ type: "ready" });
   const [remoteMessage, setRemoteMessage] = useState("");
@@ -2596,6 +2599,22 @@ function App() {
     });
     return () => {
       offRemoteStatus();
+    };
+  }, [desktop]);
+
+  useEffect(() => {
+    let active = true;
+    desktop.checkDesktopUpdate({ silent: true }).then((result) => {
+      if (active && result.ok && result.update) {
+        setDesktopUpdate(result.update);
+      }
+    }).catch(() => undefined);
+    const offDesktopUpdate = desktop.onDesktopUpdateAvailable((update) => {
+      setDesktopUpdate(update);
+    });
+    return () => {
+      active = false;
+      offDesktopUpdate();
     };
   }, [desktop]);
 
@@ -4844,8 +4863,19 @@ function App() {
 	              <Layers3 size={15} aria-hidden />
 	              {t.topbar.tools}
 	            </button>
-		          </div>
+          </div>
           <div className="topbar-actions">
+            {desktopUpdate ? (
+              <button
+                type="button"
+                className="desktop-update-button"
+                title={t.topbar.updateAvailable(desktopUpdate.version)}
+                onClick={() => desktop.openExternal(desktopUpdate.downloadUrl || desktopUpdate.releaseUrl)}
+              >
+                <DownloadCloud size={16} aria-hidden />
+                <span>{t.topbar.updateAvailable(desktopUpdate.version)}</span>
+              </button>
+            ) : null}
             {remoteStatus?.enabled && remoteStatus.running ? (
               <div className="runtime-pill ready">
                 <Smartphone size={15} aria-hidden />
