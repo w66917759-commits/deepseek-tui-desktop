@@ -769,8 +769,9 @@ label {
 .message-bubble {
   display: grid;
   gap: 5px;
-  width: fit-content;
-  max-width: 82%;
+  justify-self: start;
+  width: auto;
+  max-width: min(720px, 82%);
   padding: 11px 13px;
   border-radius: 10px;
   background: #ffffff;

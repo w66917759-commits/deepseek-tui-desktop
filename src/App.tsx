@@ -4821,14 +4821,6 @@ function App() {
           </button>
           <button
             type="button"
-            className={inspectorPanel === "git" ? "sidebar-tool active" : "sidebar-tool"}
-            onClick={() => toggleInspectorPanel("git")}
-          >
-            <Github size={16} aria-hidden />
-            {t.sidebar.git}
-          </button>
-          <button
-            type="button"
             className={inspectorPanel === "settings" ? "sidebar-tool active" : "sidebar-tool"}
             onClick={() => toggleInspectorPanel("settings")}
           >
