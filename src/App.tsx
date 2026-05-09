@@ -924,6 +924,8 @@ const uiCopy = {
       apiKeyHint: "保存后作为全局登录密钥，之后所有 workspace 默认使用；不会写入项目历史。",
       deepseekKeyPlaceholder: "粘贴 DeepSeek API Key",
       nvidiaKeyPlaceholder: "粘贴 NVIDIA NIM API Key",
+      processStream: "开启流式输出",
+      processStreamHint: "打开后右侧显示运行过程，并在启动时启用流式过程输出；关闭后只保留主对话回复。",
       allowShell: "Allow shell",
       agents: "Agents",
       setup: "Setup",
@@ -1357,6 +1359,8 @@ const uiCopy = {
       apiKeyHint: "Saved as a global sign-in key and reused for every workspace; it is not written to project history.",
       deepseekKeyPlaceholder: "Paste DeepSeek API Key",
       nvidiaKeyPlaceholder: "Paste NVIDIA NIM API Key",
+      processStream: "Enable streaming output",
+      processStreamHint: "When enabled, the right-side run stream is shown and runtime process output is requested at launch. When disabled, only the main chat reply is kept.",
       allowShell: "Allow shell",
       agents: "Agents",
       setup: "Setup",
@@ -2157,6 +2161,7 @@ function App() {
   const [customMcpEnv, setCustomMcpEnv] = useState("{}");
   const [templateMessage, setTemplateMessage] = useState("");
   const [mcpTestResult, setMcpTestResult] = useState<McpTestResult | null>(null);
+  const mcpTestServers = mcpTestResult?.servers ?? null;
   const [mcpTesting, setMcpTesting] = useState(false);
   const [mcpSecretTarget, setMcpSecretTarget] = useState<McpSecretTarget | null>(null);
   const [mcpSecretValue, setMcpSecretValue] = useState("");
@@ -2230,7 +2235,6 @@ function App() {
     () => new Set(activeSessionRuntimeTurns.map((turn) => turn.replyMessageId).filter(Boolean)),
     [activeSessionRuntimeTurns]
   );
-  const appRunning = running || runtimeSnapshot.status === "running" || runtimeOrchestratorSnapshot.status === "running" || runtimeOrchestratorSnapshot.status === "queued";
   const historyScrollUpLabel = language === "zh" ? "向上移动对话列表" : "Move conversation list up";
   const historyScrollDownLabel = language === "zh" ? "向下移动对话列表" : "Move conversation list down";
 
@@ -2583,6 +2587,10 @@ function App() {
       return;
     }
 
+    if (mainView === "chat" && !processStreamEnabled) {
+      return;
+    }
+
     if (!terminalHostRef.current || terminalRef.current) {
       return;
     }
@@ -2642,7 +2650,7 @@ function App() {
       terminalRef.current = null;
       fitRef.current = null;
     };
-  }, [desktop, fitTerminal, mainView, renderTerminalForSession]);
+  }, [desktop, fitTerminal, mainView, processStreamEnabled, renderTerminalForSession]);
 
   useEffect(() => {
     window.requestAnimationFrame(fitTerminal);
@@ -3731,8 +3739,36 @@ function App() {
   }, []);
 
   const messageListClassName = mainView === "tools" || mainView === "tasks" ? "message-list tool-message-list" : "message-list";
-  const conversationLayoutClassName = "conversation-layout conversation-layout-with-stream";
+  const conversationLayoutClassName = processStreamEnabled
+    ? "conversation-layout conversation-layout-with-stream"
+    : "conversation-layout conversation-layout-single";
   const terminalCardClassName = mainView === "terminal" ? "terminal-card terminal-expanded" : "terminal-card stream-output-card";
+  const renderMcpTestList = (servers: McpServerTest[]) => (
+    <section className="mcp-test-list">
+      {servers.length === 0 ? <p>{t.mcp.noServers}</p> : null}
+      {servers.map((server) => {
+        const preset = mcpPresets.find((candidate) => candidate.id === server.id);
+        const serverName = preset ? getMcpText(preset, language).name : server.id;
+        return (
+          <div key={server.id} className="mcp-test-row">
+            <div>
+              <strong>{serverName}</strong>
+              <span className={server.injectable ? "status-chip enabled" : "status-chip warning"}>
+                {server.injectable ? t.mcp.injectable : t.mcp.notInjected}
+              </span>
+            </div>
+            <code>{server.url || [server.command, ...server.args].filter(Boolean).join(" ")}</code>
+            {server.warnings.length > 0 ? (
+              <ul>
+                {server.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            ) : null}
+          </div>
+        );
+      })}
+    </section>
+  );
+  const renderMcpTestSection = (servers: McpServerTest[] | null) => (servers ? renderMcpTestList(servers) : null);
   const parentRuntimeTurns = runtimeOrchestratorSnapshot.turns
     .filter((turn) => turn.status === "queued" || turn.status === "running" || turn.status === "cancelling");
   const visibleRuntimeAgents = runtimeSnapshot.agents;
@@ -4104,31 +4140,7 @@ function App() {
         </section>
       ) : null}
 
-      {mcpTestResult ? (
-        <section className="mcp-test-list">
-          {mcpTestResult.servers.length === 0 ? <p>{t.mcp.noServers}</p> : null}
-          {mcpTestResult.servers.map((server) => {
-            const preset = mcpPresets.find((candidate) => candidate.id === server.id);
-            const serverName = preset ? getMcpText(preset, language).name : server.id;
-            return (
-              <div key={server.id} className="mcp-test-row">
-                <div>
-                  <strong>{serverName}</strong>
-                  <span className={server.injectable ? "status-chip enabled" : "status-chip warning"}>
-                    {server.injectable ? t.mcp.injectable : t.mcp.notInjected}
-                  </span>
-                </div>
-                <code>{server.url || [server.command, ...server.args].filter(Boolean).join(" ")}</code>
-                {server.warnings.length > 0 ? (
-                  <ul>
-                    {server.warnings.map((warning) => <li key={warning}>{warning}</li>)}
-                  </ul>
-                ) : null}
-              </div>
-            );
-          })}
-        </section>
-      ) : null}
+      {renderMcpTestSection(mcpTestServers)}
 
       <section className="template-editor custom-mcp-builder">
         <div className="template-editor-head">
@@ -4491,12 +4503,6 @@ function App() {
 
         <div className="sidebar-spacer" />
 
-        <div className={appRunning ? "sidebar-run-state active" : "sidebar-run-state"}>
-          {appRunning ? <RunningActivityMark compact /> : <LoaderCircle size={14} aria-hidden />}
-          <span>{appRunning ? t.sidebar.running : "Agents"}</span>
-          <b>{runtimeSnapshot.counts.running}</b>
-        </div>
-
         <section className="sidebar-actions">
           <button
             type="button"
@@ -4612,7 +4618,6 @@ function App() {
                     {message.title ? <strong>{message.title}</strong> : null}
                     {isRunningReply ? (
                       <span className="running-label">
-                        <RunningActivityMark compact />
                         {t.sidebar.running}
                       </span>
                     ) : null}
@@ -4740,7 +4745,7 @@ function App() {
 	            ) : null}
 	            {mainView === "tasks" ? scheduledTasksPage : null}
 		            </div>
-	            {mainView === "chat" || mainView === "terminal" ? terminalPanel : null}
+            {(mainView === "chat" && processStreamEnabled) || mainView === "terminal" ? terminalPanel : null}
           </div>
         </div>
 
@@ -4983,31 +4988,7 @@ function App() {
                 {mcpTesting ? t.mcp.testing : t.mcp.test}
               </button>
 
-              {mcpTestResult ? (
-                <section className="mcp-test-list">
-                  {mcpTestResult.servers.length === 0 ? <p>{t.mcp.noServers}</p> : null}
-                  {mcpTestResult.servers.map((server) => {
-                    const preset = mcpPresets.find((candidate) => candidate.id === server.id);
-                    const serverName = preset ? getMcpText(preset, language).name : server.id;
-                    return (
-                      <div key={server.id} className="mcp-test-row">
-                        <div>
-                          <strong>{serverName}</strong>
-	                          <span className={server.injectable ? "status-chip enabled" : "status-chip warning"}>
-	                            {server.injectable ? t.mcp.injectable : t.mcp.notInjected}
-                          </span>
-                        </div>
-	                        <code>{server.url || [server.command, ...server.args].filter(Boolean).join(" ")}</code>
-                        {server.warnings.length > 0 ? (
-                          <ul>
-                            {server.warnings.map((warning) => <li key={warning}>{warning}</li>)}
-                          </ul>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </section>
-              ) : null}
+              {renderMcpTestSection(mcpTestServers)}
 
               {filteredMcpPresets.map((preset) => {
                 const enabled = settings.enabledMcpServers.includes(preset.id);
@@ -5495,6 +5476,15 @@ function App() {
                 </div>
                 <small className="field-hint">{t.settings.apiKeyHint}</small>
               </label>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={processStreamEnabled}
+                  onChange={(event) => updateSetting("processStreamEnabled", event.target.checked)}
+                />
+                <span>{t.settings.processStream}</span>
+              </label>
+              <small className="field-hint">{t.settings.processStreamHint}</small>
               <details className="advanced-settings">
                 <summary>
                   <span>{t.settings.advancedRuntime}</span>
