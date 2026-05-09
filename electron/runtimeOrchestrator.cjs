@@ -3,6 +3,7 @@ const { spawn } = require("node:child_process");
 
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 8;
 const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
+const DEFAULT_CANCEL_GRACE_MS = 5_000;
 const CONTROL_DELTAS = new Set(["queued", "accepted", "running", "idle", "model-selected"]);
 
 function nowIso() {
@@ -76,12 +77,52 @@ function createDeepSeekCliRunner(options = {}) {
         cwd: conversation.workspacePath || defaultCwd,
         env,
         stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
         windowsHide: true
       });
 
       let stdout = "";
       let stderr = "";
-      turn.cancelRunner = () => child.kill();
+      let closed = false;
+      let escalationTimer = null;
+      let forceTimer = null;
+      const clearCancelTimers = () => {
+        if (escalationTimer) clearTimeout(escalationTimer);
+        if (forceTimer) clearTimeout(forceTimer);
+        escalationTimer = null;
+        forceTimer = null;
+      };
+      const sendSignal = (signal) => {
+        try {
+          if (process.platform !== "win32" && child.pid) {
+            process.kill(-child.pid, signal);
+          } else {
+            child.kill(signal);
+          }
+        } catch {
+          try {
+            child.kill(signal);
+          } catch {
+            // Process already exited, or the signal is not supported here.
+          }
+        }
+      };
+      turn.cancelRunner = () => {
+        if (closed) return;
+        turn.cancelled = true;
+        sendSignal(process.platform === "win32" ? "SIGTERM" : "SIGINT");
+        if (!escalationTimer) {
+          escalationTimer = setTimeout(() => {
+            if (closed) return;
+            sendSignal("SIGTERM");
+            forceTimer = setTimeout(() => {
+              if (!closed) sendSignal("SIGKILL");
+            }, 1_500);
+            if (typeof forceTimer.unref === "function") forceTimer.unref();
+          }, 1_500);
+          if (typeof escalationTimer.unref === "function") escalationTimer.unref();
+        }
+      };
 
       emitEvent({ event: "response_start", response_id: turn.turnId });
       child.stdout.on("data", (data) => {
@@ -95,10 +136,14 @@ function createDeepSeekCliRunner(options = {}) {
         emitEvent({ event: "runtime_stderr", response_id: turn.turnId, message: chunk });
       });
       child.on("error", (error) => {
+        closed = true;
+        clearCancelTimers();
         turn.cancelRunner = null;
         reject(error);
       });
       child.on("close", (code, signal) => {
+        closed = true;
+        clearCancelTimers();
         turn.cancelRunner = null;
         emitEvent({ event: "response_end", response_id: turn.turnId });
         if (turn.cancelled) {
@@ -160,6 +205,10 @@ class RuntimeOrchestrator extends EventEmitter {
     this.runner = typeof options.runner === "function" ? options.runner : null;
     this.events = [];
     this.maxEvents = Number(options.maxEvents) || 120;
+    const cancelGraceMs = Number(options.cancelGraceMs ?? options.cancelTimeoutMs ?? DEFAULT_CANCEL_GRACE_MS);
+    this.cancelGraceMs = Number.isFinite(cancelGraceMs) && cancelGraceMs >= 0
+      ? cancelGraceMs
+      : DEFAULT_CANCEL_GRACE_MS;
   }
 
   startTurn(payload = {}) {
@@ -257,6 +306,7 @@ class RuntimeOrchestrator extends EventEmitter {
       if (typeof turn.cancelRunner === "function") {
         turn.cancelRunner();
       }
+      this.scheduleCancelDeadline(turn);
       this.addEvent("turn-cancelling", "Turn cancellation requested", turn.prompt.slice(0, 120), turn);
     }
 
@@ -432,6 +482,10 @@ class RuntimeOrchestrator extends EventEmitter {
   }
 
   async runTurn(turn, conversation) {
+    if (turn.cancelled) {
+      this.finishTurn(turn, conversation, { status: "cancelled" });
+      return;
+    }
     if (!conversation.threadId) {
       const startResult = await this.client.request("thread/start", {
         cwd: conversation.workspacePath
@@ -439,6 +493,11 @@ class RuntimeOrchestrator extends EventEmitter {
       conversation.threadId = startResult.thread_id || startResult.thread?.id || "";
     }
     turn.threadId = conversation.threadId;
+
+    if (turn.cancelled) {
+      this.finishTurn(turn, conversation, { status: "cancelled" });
+      return;
+    }
 
     if (this.runner) {
       const result = await this.runner(turn, conversation, (event) => this.ingestRuntimeEvent(event, turn));
@@ -478,6 +537,10 @@ class RuntimeOrchestrator extends EventEmitter {
 
   finishTurn(turn, conversation, result) {
     if (turn.status === "completed" || turn.status === "failed" || turn.status === "cancelled") return;
+    if (turn.cancelDeadline) {
+      clearTimeout(turn.cancelDeadline);
+      turn.cancelDeadline = null;
+    }
     turn.cancelRunner = null;
     this.runningTurnIds.delete(turn.turnId);
     const finalStatus = result.status || "completed";
@@ -491,6 +554,20 @@ class RuntimeOrchestrator extends EventEmitter {
     this.emit(`turn-${finalStatus}`, turnPublicView(turn));
     this.emitSnapshot();
     this.pump();
+  }
+
+  scheduleCancelDeadline(turn) {
+    if (turn.cancelDeadline) {
+      clearTimeout(turn.cancelDeadline);
+    }
+    turn.cancelDeadline = setTimeout(() => {
+      const current = this.turns.get(turn.turnId);
+      if (!current || current.status !== "cancelling") return;
+      const conversation = this.conversations.get(current.conversationId);
+      if (!conversation) return;
+      this.finishTurn(current, conversation, { status: "cancelled" });
+    }, this.cancelGraceMs);
+    if (typeof turn.cancelDeadline.unref === "function") turn.cancelDeadline.unref();
   }
 
   addEvent(type, label, detail, turn = null) {

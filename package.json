@@ -1,6 +1,6 @@
 {
   "name": "deepseek-tui-desktop",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Desktop shell for DeepSeek TUI coding agent.",
   "main": "electron/main.cjs",
@@ -44,7 +44,19 @@
       "dist/**",
       "electron/**",
       "node_modules/**",
-      "package.json"
+      "package.json",
+      "!**/.env",
+      "!**/.env.*",
+      "!**/secrets.json",
+      "!**/settings.json",
+      "!**/remote-auth.json",
+      "!**/automations.json",
+      "!**/history.json",
+      "!**/mcp.custom.json",
+      "!**/mcp.runtime.json",
+      "!**/mcp.presets.json",
+      "!**/deepseek.desktop.managed.toml",
+      "!**/.deepseek/**"
     ],
     "asarUnpack": [
       "electron/skills/**",

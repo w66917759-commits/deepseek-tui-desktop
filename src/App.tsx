@@ -680,6 +680,7 @@ const uiCopy = {
 	        failed: "失败",
 	        stopped: "已停止",
 	        queued: "排队中",
+	        cancelling: "取消中",
 	        cancelled: "已取消"
 	      }
 	    },
@@ -854,8 +855,8 @@ const uiCopy = {
       actionFailed: "Git 操作失败"
     },
     automations: {
-      helpTitle: "定时任务",
-      helpBody: "设置一个每天自动运行的 Agent 任务。界面只保留任务内容、工作区、运行时间和启用状态。",
+      helpTitle: "自动化",
+      helpBody: "",
       newTask: "新建定时任务",
       taskName: "任务名称",
       taskNamePlaceholder: "例如：每日项目巡检",
@@ -878,8 +879,10 @@ const uiCopy = {
       installed: "已启用",
       generated: "已保存",
       draft: "已暂停",
-      listTitle: "已有定时任务",
-      noTasks: "还没有定时任务。",
+      listTitle: "定时任务",
+      activeGroup: "运行中",
+      pausedGroup: "已暂停",
+      noTasks: "暂无自动化任务",
       localRunner: "本机执行",
       logFile: "日志文件",
       command: "运行命令",
@@ -1150,6 +1153,7 @@ const uiCopy = {
 	        failed: "Failed",
 	        stopped: "Stopped",
 	        queued: "Queued",
+	        cancelling: "Cancelling",
 	        cancelled: "Cancelled"
 	      }
 	    },
@@ -1324,8 +1328,8 @@ const uiCopy = {
       actionFailed: "Git action failed"
     },
     automations: {
-      helpTitle: "Scheduled Tasks",
-      helpBody: "Set up one Agent task that runs automatically every day. The interface only keeps the task prompt, workspace, run time, and active status.",
+      helpTitle: "Automations",
+      helpBody: "",
       newTask: "New scheduled task",
       taskName: "Task name",
       taskNamePlaceholder: "Example: Daily project check",
@@ -1349,7 +1353,9 @@ const uiCopy = {
       generated: "Saved",
       draft: "Paused",
       listTitle: "Scheduled tasks",
-      noTasks: "No scheduled tasks yet.",
+      activeGroup: "Active",
+      pausedGroup: "Paused",
+      noTasks: "No automations yet.",
       localRunner: "Local runner",
       logFile: "Log file",
       command: "Run command",
@@ -2843,9 +2849,21 @@ function App() {
   const enabledSkillCount = settings.enabledSkills.length;
   const skillsRuntimeReady = settings.skillsEnabled && (settings.enabledSkills.length > 0 || Boolean(settings.skillsDir.trim()));
   const scheduledTaskSkillEnabled = settings.skillsEnabled && settings.enabledSkills.includes(SCHEDULED_TASK_SKILL_ID);
-  const activeAutomationCount = automationTasks.filter((task) => automationStatus(task) === "ACTIVE" && task.installed).length;
-  const latestAutomationError = automationTasks.find((task) => Boolean(task.error))?.error || "";
-  const latestAutomationLogPath = automationTasks.find((task) => Boolean(task.logPath))?.logPath || "";
+  const automationGroups = useMemo(() => {
+    const active: AutomationTask[] = [];
+    const paused: AutomationTask[] = [];
+    for (const task of automationTasks) {
+      if (automationStatus(task) === "ACTIVE") {
+        active.push(task);
+      } else {
+        paused.push(task);
+      }
+    }
+    return [
+      { key: "active", title: t.automations.activeGroup, tasks: active },
+      { key: "paused", title: t.automations.pausedGroup, tasks: paused }
+    ].filter((group) => group.tasks.length > 0);
+  }, [automationTasks, t]);
   const skillCatalog = useMemo<SkillCatalogItem[]>(() => {
     const templates = customization?.skillTemplates || {};
     const presetMap = new Map(skillPresets.map((preset) => [preset.id, preset]));
@@ -4147,7 +4165,7 @@ function App() {
               <b>{turn.status === "queued"
                 ? t.runtimeAgents.statuses.queued
                 : turn.status === "cancelling"
-                  ? t.runtimeAgents.statuses.cancelled
+                  ? t.runtimeAgents.statuses.cancelling
                   : t.runtimeAgents.statuses.running}</b>
             </article>
           ))}
@@ -4568,181 +4586,61 @@ function App() {
   );
 
   const scheduledTasksPage = (
-    <section className="tool-editor-page scheduled-task-page">
-      <div className="tool-help">
-        <CalendarClock size={17} aria-hidden />
-        <div>
-          <strong>{t.automations.helpTitle}</strong>
-          <p>{t.automations.helpBody}</p>
-        </div>
-      </div>
-
-      <div className="automation-connection-grid">
-        <div className="automation-connection-item">
-          <span className={scheduledTaskSkillEnabled ? "status-chip enabled" : "status-chip warning"}>
-            {scheduledTaskSkillEnabled ? t.automations.skillReady : t.automations.bridgeDisabled}
-          </span>
-          <small>{scheduledTaskSkillEnabled ? t.automations.bridgeReady : t.skills.runtimeHint}</small>
-        </div>
-        <div className="automation-connection-item">
-          <span className={activeAutomationCount > 0 ? "status-chip enabled" : "status-chip"}>
-            {t.automations.cronActiveCount(activeAutomationCount)}
-          </span>
-          <small>{latestAutomationLogPath || t.automations.noTasks}</small>
-        </div>
-        {latestAutomationError ? (
-          <div className="automation-connection-item error">
-            <span className="status-chip warning">{t.automations.latestError}</span>
-            <small>{latestAutomationError}</small>
-          </div>
-        ) : null}
-      </div>
-
-      <section className="template-editor automation-editor">
-        <div className="template-editor-head">
-          <div>
-            <strong>{automationDraft.id ? automationDraft.name || defaultScheduledTaskName(automationDraft.prompt, language) : t.automations.newTask}</strong>
-            <small>{automationSchedulePreview(automationDraft, language)}</small>
-          </div>
-          <span className={automationDraft.status === "ACTIVE" ? "status-chip enabled" : "status-chip"}>
-            {automationDraft.status === "ACTIVE" ? t.automations.active : t.automations.paused}
-          </span>
-        </div>
-
-        <label>
-          {t.automations.prompt}
-          <textarea
-            value={automationDraft.prompt}
-            onChange={(event) => setAutomationDraft((current) => ({ ...current, prompt: event.target.value }))}
-            placeholder={t.automations.promptPlaceholder}
-            rows={5}
-          />
-        </label>
-
-        <label>
-          {t.automations.workspace}
-          <span className="path-picker">
-            <input
-              value={automationDraft.workspacePath}
-              onChange={(event) => setAutomationDraft((current) => ({ ...current, workspacePath: event.target.value }))}
-              placeholder={settings.workspacePath || t.topbar.noWorkspace}
-              spellCheck={false}
-            />
-            <button type="button" title={t.automations.chooseWorkspace} onClick={chooseAutomationWorkspace}>
-              <FolderOpen size={16} aria-hidden />
-            </button>
-          </span>
-        </label>
-
-        <div className="automation-time-grid simple">
-          <label>
-            {t.automations.scheduleTime}
-            <input
-              type="time"
-              value={automationTimeValue(automationDraft.hour, automationDraft.minute)}
-              onChange={(event) => setAutomationDraft((current) => ({ ...current, ...parseAutomationTime(event.target.value) }))}
-            />
-          </label>
-          <label className="check-row scheduled-task-toggle">
-            <input
-              type="checkbox"
-              checked={automationDraft.status === "ACTIVE"}
-              onChange={(event) => setAutomationDraft((current) => ({ ...current, status: event.target.checked ? "ACTIVE" : "PAUSED" }))}
-            />
-            <span>{t.automations.enableTask}</span>
-          </label>
-        </div>
-
-        <div className="automation-preview">
-          <span>{t.automations.schedulePreview}</span>
-          <code>{automationSchedulePreview(automationDraft, language)}</code>
-        </div>
-
-        <div className="template-actions">
-          <button type="button" className="secondary" onClick={newAutomationDraft} disabled={automationBusy}>
-            <Plus size={16} aria-hidden />
-            {t.automations.newTask}
-          </button>
-          <button
-            type="button"
-            className="primary"
-            onClick={saveAutomationDraft}
-            disabled={automationBusy || !automationDraft.prompt.trim()}
-          >
-            <CheckCircle2 size={16} aria-hidden />
-            {t.automations.save}
-          </button>
-        </div>
-      </section>
-
+    <section className="tool-editor-page scheduled-task-page automation-manager">
+      <header className="automation-manager-head">
+        <h1>{t.automations.helpTitle}</h1>
+      </header>
       {automationMessage ? (
         <p className={automationMessageKind === "error" ? "template-message error" : "template-message"}>{automationMessage}</p>
       ) : null}
 
-      <section className="automation-list">
-        <div className="automation-list-head">
-          <strong>{t.automations.listTitle}</strong>
-          <small>{automationTasks.length}</small>
-        </div>
-        {automationTasks.length === 0 ? <p>{t.automations.noTasks}</p> : null}
-        {automationTasks.map((task) => {
-          const taskStatus = automationStatus(task);
-          return (
-          <article key={task.id} className={taskStatus === "ACTIVE" ? "automation-card installed" : "automation-card"}>
-            <button type="button" className="automation-card-main" onClick={() => selectAutomationTask(task)}>
-              <span className="preset-icon"><CalendarClock size={18} aria-hidden /></span>
-              <span>
-                <strong>{task.name}</strong>
-                <small>{automationSchedulePreview(createAutomationDraft(settings, task), language)}</small>
-              </span>
-              <span className={taskStatus === "ACTIVE" ? "status-chip enabled" : "status-chip"}>
-                {taskStatus === "ACTIVE" ? t.automations.installed : t.automations.draft}
-              </span>
-            </button>
-            <div className="automation-paths">
-              <span>{t.automations.workspace}</span>
-              <code title={task.workspacePath}>{task.workspacePath || "-"}</code>
-              {task.lastGeneratedAt ? (
-                <>
-                  <span>{t.automations.lastGenerated}</span>
-                  <code>{formatAutomationTime(task.lastGeneratedAt, language)}</code>
-                </>
-              ) : null}
-              {task.lastInstalledAt ? (
-                <>
-                  <span>{t.automations.lastInstalled}</span>
-                  <code>{formatAutomationTime(task.lastInstalledAt, language)}</code>
-                </>
-              ) : null}
+      {automationGroups.length === 0 ? (
+        <p className="automation-empty">{t.automations.noTasks}</p>
+      ) : (
+        automationGroups.map((group) => (
+          <section key={group.key} className="automation-list">
+            <h2>{group.title}</h2>
+            <div className="automation-rows">
+              {group.tasks.map((task) => {
+                const taskStatus = automationStatus(task);
+                const schedule = automationSchedulePreview(createAutomationDraft(settings, task), language);
+                const workspaceName = task.workspacePath ? projectNameFromWorkspace(task.workspacePath, language) : "";
+                const idPreview = task.id.length > 18 ? `${task.id.slice(0, 18)}...` : task.id;
+                const meta = [schedule, workspaceName || idPreview, workspaceName ? idPreview : ""].filter(Boolean).join(" · ");
+                return (
+                  <article key={task.id} className="automation-row">
+                    <span className="automation-row-icon" aria-hidden>
+                      <CalendarClock size={14} />
+                    </span>
+                    <div className="automation-row-main">
+                      <strong title={task.name || task.prompt}>{task.name || defaultScheduledTaskName(task.prompt, language)}</strong>
+                      <small title={[schedule, task.workspacePath, task.id].filter(Boolean).join(" · ")}>{meta}</small>
+                      {task.error ? <small className="automation-row-error">{task.error}</small> : null}
+                    </div>
+                    <span className="automation-row-state">
+                      {taskStatus === "ACTIVE" ? t.automations.installed : t.automations.draft}
+                    </span>
+                    <div className="automation-row-actions">
+                      {taskStatus === "ACTIVE" ? (
+                        <button type="button" title={t.automations.uninstall} onClick={() => uninstallAutomationTask(task)} disabled={automationBusy}>
+                          <Square size={15} aria-hidden />
+                        </button>
+                      ) : (
+                        <button type="button" title={t.automations.install} onClick={() => installAutomationTask(task)} disabled={automationBusy}>
+                          <CalendarClock size={15} aria-hidden />
+                        </button>
+                      )}
+                      <button type="button" className="danger" title={t.automations.delete} onClick={() => deleteAutomationTask(task)} disabled={automationBusy}>
+                        <Trash2 size={15} aria-hidden />
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
-            {task.commandPreview && task.error ? (
-              <div className="automation-command">
-                <span>{t.automations.localRunner}</span>
-                <code title={task.commandPreview}>{task.commandPreview}</code>
-              </div>
-            ) : null}
-            {task.error ? <p className="template-message error">{task.error}</p> : null}
-            <div className="automation-actions">
-              {taskStatus === "ACTIVE" ? (
-                <button type="button" className="secondary" onClick={() => uninstallAutomationTask(task)} disabled={automationBusy}>
-                  <Square size={16} aria-hidden />
-                  {t.automations.uninstall}
-                </button>
-              ) : (
-                <button type="button" className="primary" onClick={() => installAutomationTask(task)} disabled={automationBusy}>
-                  <CalendarClock size={16} aria-hidden />
-                  {t.automations.install}
-                </button>
-              )}
-              <button type="button" className="secondary danger" onClick={() => deleteAutomationTask(task)} disabled={automationBusy}>
-                <Trash2 size={16} aria-hidden />
-                {t.automations.delete}
-              </button>
-            </div>
-          </article>
-          );
-        })}
-      </section>
+          </section>
+        ))
+      )}
     </section>
   );
 
