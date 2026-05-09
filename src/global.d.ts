@@ -73,6 +73,7 @@ declare global {
   type BinaryMode = "bundled" | "system" | "custom";
   type ProviderMode = "deepseek" | "nvidia-nim";
   type AppLanguage = "zh" | "en";
+  type DeepSeekThinkingMode = "max" | "high" | "off";
   type WorkspaceEditor = "cursor" | "vscode";
   type AutomationFrequency = "hourly" | "daily" | "weekly" | "custom";
   type AutomationStatus = "ACTIVE" | "PAUSED";
@@ -139,6 +140,7 @@ declare global {
     allowShell: boolean;
     maxSubagents: number;
     processStreamEnabled: boolean;
+    thinkingMode: DeepSeekThinkingMode;
     harnessEnabled: boolean;
     launchAction: LaunchAction;
     rememberWorkspace: boolean;

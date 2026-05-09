@@ -17,15 +17,17 @@ const DEFAULT_PATH = [
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
-const DEFAULT_ENABLED_SKILLS = ["superpowers", "ui-ux-pro-max", "cron-scheduler", "skill-downloader"];
+const DEFAULT_ENABLED_SKILLS = ["superpowers", "ui-ux-pro-max", "scheduled-task-agent", "cron-scheduler", "skill-downloader"];
+const PREVIOUS_DEFAULT_ENABLED_SKILLS = ["superpowers", "ui-ux-pro-max", "cron-scheduler", "skill-downloader"];
 const LEGACY_DEFAULT_SKILLS = ["superpowers", "ui-ux-design"];
 const DEFAULT_MAX_SUBAGENTS = 10;
 const LEGACY_DESKTOP_MAX_SUBAGENTS = 3;
 const DESKTOP_MANAGED_CONFIG_FILE = "deepseek.desktop.managed.toml";
-const SKILL_PRESET_VERSION = 4;
+const SKILL_PRESET_VERSION = 5;
 const AUTOMATION_STORE_VERSION = 1;
 const AUTOMATION_CRON_BEGIN = "# BEGIN DeepSeek TUI Desktop automation";
 const AUTOMATION_CRON_END = "# END DeepSeek TUI Desktop automation";
+const DESKTOP_AUTOMATION_MCP_ID = "desktop-automation";
 const SKILL_CONTENT_MAX_CHARS = 120000;
 const SKILL_ID_MAX_CHARS = 72;
 const CRON_ALIASES = new Set(["@reboot", "@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly"]);
@@ -54,12 +56,12 @@ function desktopEnv(env = process.env) {
 const CRON_SCHEDULER_SKILL_CONTENT = [
   "---",
   "name: cron-scheduler",
-  "description: Advanced-only helper for hand-authored crontab files. Normal scheduled tasks are managed by the Scheduled Tasks screen.",
+  "description: Advanced-only helper for hand-authored crontab files. Normal scheduled tasks are handled by the Scheduled Task Agent Skill.",
   "---",
   "",
   "# Cron Advanced Scripts",
   "",
-  "Use this skill only when the user explicitly asks for a raw cron file or crontab snippet. For normal recurring Agent tasks, use the desktop Scheduled Tasks screen instead of telling the Agent to create a cron file.",
+  "Use this skill only when the user explicitly asks for a raw cron file or crontab snippet. For normal recurring Agent tasks, use the Scheduled Task Agent Skill instead of telling the Agent to create a cron file first.",
   "",
   "## Guardrails",
   "",
@@ -90,6 +92,38 @@ const CRON_SCHEDULER_SKILL_CONTENT = [
   "## Installation Handling",
   "",
   "If the user explicitly asks to install it, first inspect `crontab -l`. Merge the new entry with existing entries instead of replacing the user's crontab blindly."
+].join("\n");
+
+const SCHEDULED_TASK_AGENT_SKILL_CONTENT = [
+  "---",
+  "name: scheduled-task-agent",
+  "description: Use when the user asks to create, plan, write, schedule, run later, repeat, remind, cron, launchd, background task, automation, recurring job, 定时任务, 自动任务, 提醒, 每天, 每小时, or 稍后执行 inside DeepSeek TUI Desktop.",
+  "---",
+  "",
+  "# Scheduled Task Agent",
+  "",
+  "Use this skill for normal scheduled-task requests in DeepSeek TUI Desktop.",
+  "",
+  "## Tool Contract",
+  "",
+  "- For normal scheduled-task requests, call the built-in `automation_create` tool.",
+  "- Use `automation_list`, `automation_pause`, and `automation_delete` when the user asks to inspect, pause, or remove scheduled tasks.",
+  "- Only use the advanced `cron-scheduler` Skill when the user explicitly asks for a raw cron file or crontab snippet.",
+  "- Do not ask the user to manually open the Scheduled Tasks page when the task can be created from the conversation.",
+  "",
+  "## Workflow",
+  "",
+  "1. Normalize the request into: task goal, Agent prompt, workspace, local wall-clock time, timezone, and active/paused status.",
+  "2. If the task goal, workspace, hour, or minute is missing, ask only for the missing fields.",
+  "3. If enough information is present, call `automation_create` with `prompt`, `workspacePath`, `hour`, `minute`, optional `name`, optional `timezone`, and `status` (default `ACTIVE`).",
+  "4. After the tool returns, report the task id, activation status, cron path, log path, and any error.",
+  "5. If the tool reports a credential or runtime problem, tell the user the exact missing piece instead of writing a separate cron file.",
+  "",
+  "## Response Style",
+  "",
+  "- Do not over-explain unavailable internals.",
+  "- If more information is needed, ask concise clarifying questions.",
+  "- If enough information is present, produce the schedule artifact or exact next command."
 ].join("\n");
 
 const SKILL_DOWNLOADER_SKILL_CONTENT = [
@@ -250,6 +284,11 @@ const PRESET_SKILLS = {
         executable: true
       }
     ]
+  },
+  "scheduled-task-agent": {
+    dir: "scheduled-task-agent",
+    name: "Scheduled Task Agent",
+    content: SCHEDULED_TASK_AGENT_SKILL_CONTENT
   },
   "skill-downloader": {
     dir: "skill-downloader",
@@ -424,6 +463,7 @@ function defaultSettings() {
     allowShell: false,
     maxSubagents: DEFAULT_MAX_SUBAGENTS,
     processStreamEnabled: true,
+    thinkingMode: "max",
     harnessEnabled: false,
     launchAction: "tui",
     rememberWorkspace: true,
@@ -464,7 +504,8 @@ function normalizeSettings(settings) {
     model: provider === "deepseek"
       ? normalizeDeepSeekModelSelection(settings.model)
       : settings.model || DEFAULT_DEEPSEEK_MODEL,
-    baseUrl: settings.baseUrl || defaultBaseUrlForProvider(provider)
+    baseUrl: settings.baseUrl || defaultBaseUrlForProvider(provider),
+    thinkingMode: normalizeDeepSeekThinkingMode(settings.thinkingMode)
   };
 }
 
@@ -530,6 +571,7 @@ function sanitizeSettings(settings) {
   safeSettings.mcpEnabled = Boolean(safeSettings.mcpEnabled);
   safeSettings.processStreamEnabled = safeSettings.processStreamEnabled ?? true;
   safeSettings.processStreamEnabled = safeSettings.processStreamEnabled !== false;
+  safeSettings.thinkingMode = normalizeDeepSeekThinkingMode(safeSettings.thinkingMode);
   safeSettings.mobileRemoteControlEnabled = Boolean(safeSettings.mobileRemoteControlEnabled);
   safeSettings.updatePushEnabled = Boolean(safeSettings.updatePushEnabled);
   safeSettings.mobileBridgeHost = typeof safeSettings.mobileBridgeHost === "string" && safeSettings.mobileBridgeHost.trim()
@@ -556,15 +598,28 @@ function normalizeMaxSubagents(value) {
     : number;
 }
 
+function normalizeDeepSeekThinkingMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  return mode === "high" || mode === "off" || mode === "max" ? mode : "max";
+}
+
 function desktopProcessReasoningEffort(settings) {
-  return settings?.processStreamEnabled === false ? "off" : "max";
+  if (settings?.processStreamEnabled === false) return "off";
+  return normalizeDeepSeekThinkingMode(settings?.thinkingMode);
 }
 
 function enabledList(values) {
   return Array.isArray(values) ? values.filter((value) => typeof value === "string") : [];
 }
 
+function sameSkillSelection(left, right) {
+  return left.length === right.length && right.every((id) => left.includes(id));
+}
+
 function mcpFeatureArgs(options = {}) {
+  if (options.desktopAutomationMcpReady) {
+    return ["--enable", "mcp"];
+  }
   if (typeof options.runtimeMcpReady === "boolean") {
     return options.mcpEnabled && options.runtimeMcpReady ? ["--enable", "mcp"] : [];
   }
@@ -594,8 +649,10 @@ function normalizeEnabledSkills(settings) {
     && selected.length === LEGACY_DEFAULT_SKILLS.length + 1
     && LEGACY_DEFAULT_SKILLS.every((id) => selected.includes(id))
     && selected.includes("cron-scheduler");
+  const previousDesktopDefaults = shouldRunSkillMigration
+    && sameSkillSelection(selectedWithRenamedPresets, PREVIOUS_DEFAULT_ENABLED_SKILLS);
 
-  const normalized = stillOnOldDefaults || oldDefaultsWithCron ? [...DEFAULT_ENABLED_SKILLS] : selectedWithRenamedPresets;
+  const normalized = stillOnOldDefaults || oldDefaultsWithCron || previousDesktopDefaults ? [...DEFAULT_ENABLED_SKILLS] : selectedWithRenamedPresets;
 
   return normalized.filter((id) => id !== "harness-probe-rollback");
 }
@@ -1176,6 +1233,9 @@ function isGitHubRemoteUrl(remoteUrl) {
 
 function commandExists(command) {
   if (!command) return false;
+  if (path.isAbsolute(command)) {
+    return fs.existsSync(command);
+  }
   const executable = process.platform === "win32" && !/\.(cmd|exe|bat)$/i.test(command)
     ? `${command}.cmd`
     : command;
@@ -1399,7 +1459,7 @@ class DeepSeekDesktopHarness extends EventEmitter {
       const raw = fs.readFileSync(this.userDataPath("settings.json"), "utf8");
       const parsed = JSON.parse(raw);
       const safeSettings = sanitizeSettings(parsed);
-      if (!parsed.mobileBridgeToken) {
+      if (!parsed.mobileBridgeToken || JSON.stringify(parsed) !== JSON.stringify(safeSettings)) {
         this.writeSettings(safeSettings);
       }
       return safeSettings;
@@ -1567,6 +1627,31 @@ class DeepSeekDesktopHarness extends EventEmitter {
     return this.userDataPath("automation-runner.cjs");
   }
 
+  desktopAutomationMcpServerPath() {
+    return resolveBundledResourcePath(path.resolve(__dirname, "desktop-automation-mcp.cjs"));
+  }
+
+  desktopAutomationMcpEnabled(settings) {
+    return settings.skillsEnabled !== false
+      && runtimeSkillIdsForSelection(settings.enabledSkills).includes("scheduled-task-agent");
+  }
+
+  desktopAutomationMcpEntry(settings, workspacePath) {
+    const env = {
+      ELECTRON_RUN_AS_NODE: "1",
+      DEEPSEEK_DESKTOP_USER_DATA: this.app.getPath("userData"),
+      DEEPSEEK_DESKTOP_APP_ROOT: this.packageRoot(),
+      DEEPSEEK_DESKTOP_WORKSPACE: workspacePath
+    };
+    return {
+      id: DESKTOP_AUTOMATION_MCP_ID,
+      command: process.execPath,
+      args: [this.desktopAutomationMcpServerPath()],
+      env,
+      url: ""
+    };
+  }
+
   writeAutomationRunner() {
     const filePath = this.automationRunnerPath();
     const content = `#!/usr/bin/env node
@@ -1575,6 +1660,8 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const DEFAULT_PATH = ${JSON.stringify(DEFAULT_PATH)};
+const DEFAULT_MAX_SUBAGENTS = ${DEFAULT_MAX_SUBAGENTS};
+const LEGACY_DESKTOP_MAX_SUBAGENTS = ${LEGACY_DESKTOP_MAX_SUBAGENTS};
 const userDataPath = __dirname;
 
 function readJson(file, fallback) {
@@ -1587,6 +1674,13 @@ function readJson(file, fallback) {
 
 function normalizeProvider(provider) {
   return provider === "nvidia-nim" ? "nvidia-nim" : "deepseek";
+}
+
+function normalizeMaxSubagents(value) {
+  const number = Number(value);
+  return !Number.isFinite(number) || number === LEGACY_DESKTOP_MAX_SUBAGENTS
+    ? DEFAULT_MAX_SUBAGENTS
+    : number;
 }
 
 function apiModelForProvider(provider, model) {
@@ -1700,7 +1794,8 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     const args = ["exec", ...mcpFeatureArgs({
       ...settings,
       runtimeMcpServerIds,
-      runtimeMcpReady: this.runtimeMcpReady(settings, workspacePath)
+      runtimeMcpReady: this.runtimeMcpReady(settings, workspacePath),
+      desktopAutomationMcpReady: this.desktopAutomationMcpEnabled(settings)
     }), "--auto", task.prompt].filter(Boolean);
     return {
       runtime,
@@ -1755,6 +1850,9 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     }
     if (settingsForRun.mcpEnabled && runtimeMcpServerIds.length > 0) {
       envLines.push(`DEEPSEEK_DESKTOP_ENABLED_MCP=${cronEnvValue(runtimeMcpServerIds.join(","))}`);
+    }
+    if (this.desktopAutomationMcpEnabled(settingsForRun)) {
+      envLines.push("DEEPSEEK_DESKTOP_AUTOMATION_MCP=1");
     }
     if (settingsForRun.allowShell) {
       envLines.push("DEEPSEEK_ALLOW_SHELL=1");
@@ -2000,6 +2098,80 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     });
   }
 
+  callAutomationBridgeTool(name, args = {}, settingsOverride = {}) {
+    const toolName = String(name || "").trim();
+    const settings = sanitizeSettings({ ...this.readSettings(), ...(settingsOverride || {}) });
+    const payload = args && typeof args === "object" ? args : {};
+
+    if (toolName === "automation_list") {
+      const store = this.readAutomations();
+      return {
+        ok: true,
+        tasks: store.tasks,
+        count: store.tasks.length
+      };
+    }
+
+    if (toolName === "automation_pause") {
+      const id = trimString(payload.id, 100);
+      if (!id) return { ok: false, error: "Task id is required." };
+      const result = this.uninstallAutomation({ id, settings });
+      return {
+        ok: Boolean(result.ok),
+        error: result.error || "",
+        task: result.task || null,
+        tasks: result.tasks || []
+      };
+    }
+
+    if (toolName === "automation_delete") {
+      const id = trimString(payload.id, 100);
+      if (!id) return { ok: false, error: "Task id is required." };
+      const result = this.deleteAutomation({ id });
+      return {
+        ok: Boolean(result.ok),
+        error: result.error || "",
+        tasks: result.tasks || []
+      };
+    }
+
+    if (toolName === "automation_create") {
+      const prompt = String(payload.prompt || "").trim();
+      const hour = clampInteger(payload.hour, 0, 23, Number.NaN);
+      const minute = clampInteger(payload.minute, 0, 59, Number.NaN);
+      if (!prompt) return { ok: false, error: "Automation prompt is required." };
+      if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+        return { ok: false, error: "Automation hour and minute are required." };
+      }
+
+      const task = {
+        name: trimString(payload.name || "Scheduled Agent Task", 120),
+        prompt,
+        workspacePath: normalizeWorkspace(payload.workspacePath || settings.workspacePath),
+        hour,
+        minute,
+        timezone: trimString(payload.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", 80),
+        status: String(payload.status || "ACTIVE").toUpperCase() === "PAUSED" ? "PAUSED" : "ACTIVE",
+        enabled: String(payload.status || "ACTIVE").toUpperCase() !== "PAUSED"
+      };
+      const result = this.saveAutomation({ settings, task });
+      const savedTask = result.task || null;
+      return {
+        ok: Boolean(result.ok),
+        error: result.error || "",
+        id: savedTask?.id || "",
+        status: savedTask?.status || "",
+        installed: Boolean(savedTask?.installed),
+        cronPath: savedTask?.cronPath || "",
+        logPath: savedTask?.logPath || "",
+        task: savedTask,
+        tasks: result.tasks || []
+      };
+    }
+
+    return { ok: false, error: `Unknown automation tool: ${toolName}` };
+  }
+
   rotateRemoteToken() {
     const settings = this.readSettings();
     return this.writeSettings({ ...settings, mobileBridgeToken: createRemoteToken() });
@@ -2190,9 +2362,16 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       const skillDir = path.join(root, preset.dir);
       const filePath = path.join(skillDir, "SKILL.md");
       fs.mkdirSync(skillDir, { recursive: true });
+      const existingContent = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
       const shouldWrite = !fs.existsSync(filePath)
         || (Array.isArray(preset.legacyContent) && preset.legacyContent.includes(fs.readFileSync(filePath, "utf8")));
-      if (shouldWrite) {
+      const shouldRefreshScheduledTaskAgent = id === "scheduled-task-agent"
+        && existingContent
+        && (
+          existingContent.includes("Do not try to call, invent, or center the answer around `automation_create`")
+          || !existingContent.includes("call the built-in `automation_create` tool")
+        );
+      if (shouldWrite || shouldRefreshScheduledTaskAgent) {
         fs.writeFileSync(filePath, preset.content);
       }
       copyPresetSupportFiles(skillDir, preset);
@@ -2246,6 +2425,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
   }
 
   runtimeMcpReady(settings, workspacePath) {
+    if (this.desktopAutomationMcpEnabled(settings)) return true;
     if (!settings.mcpEnabled) return false;
     if (settings.mcpConfigPath) {
       try {
@@ -2295,15 +2475,40 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     };
   }
 
+  addDesktopAutomationMcpServer(config, settings, workspacePath) {
+    if (!this.desktopAutomationMcpEnabled(settings)) {
+      return config;
+    }
+    const entry = this.desktopAutomationMcpEntry(settings, workspacePath);
+    config.servers[DESKTOP_AUTOMATION_MCP_ID] = {
+      command: entry.command,
+      args: entry.args,
+      env: entry.env,
+      url: null,
+      connect_timeout: null,
+      execute_timeout: null,
+      read_timeout: null,
+      disabled: false,
+      enabled: true,
+      required: false,
+      enabled_tools: ["automation_create", "automation_list", "automation_pause", "automation_delete"],
+      disabled_tools: []
+    };
+    return config;
+  }
+
   writePresetMcpConfig(settings, workspacePath) {
-    if (!settings.mcpEnabled) {
+    const includeAutomationBridge = this.desktopAutomationMcpEnabled(settings);
+    if (!settings.mcpEnabled && !includeAutomationBridge) {
       return "";
     }
 
     if (settings.mcpConfigPath) {
-      const source = this.readMcpServerEntries(settings, workspacePath);
+      const source = settings.mcpEnabled
+        ? this.readMcpServerEntries(settings, workspacePath)
+        : { entries: [] };
       const entries = source.entries.filter((entry) => mcpServerDiagnostic(entry).injectable);
-      if (entries.length === 0) {
+      if (entries.length === 0 && !includeAutomationBridge) {
         return "";
       }
       const filePath = this.userDataPath("mcp.runtime.json");
@@ -2329,17 +2534,22 @@ process.exit(typeof result.status === "number" ? result.status : 1);
         },
         servers
       };
+      this.addDesktopAutomationMcpServer(config, settings, workspacePath);
       fs.mkdirSync(this.app.getPath("userData"), { recursive: true });
       fs.writeFileSync(filePath, JSON.stringify(config, null, 2));
       return filePath;
     }
 
-    const selected = enabledList(settings.enabledMcpServers);
-    if (selected.length === 0) {
+    const selected = settings.mcpEnabled ? enabledList(settings.enabledMcpServers) : [];
+    if (selected.length === 0 && !includeAutomationBridge) {
       return "";
     }
 
-    const configForRuntime = this.buildPresetMcpConfig(settings, workspacePath, { runtimeOnly: true });
+    const configForRuntime = this.buildPresetMcpConfig({
+      ...settings,
+      enabledMcpServers: selected
+    }, workspacePath, { runtimeOnly: true });
+    this.addDesktopAutomationMcpServer(configForRuntime, settings, workspacePath);
     if (Object.keys(configForRuntime.servers).length === 0) {
       return "";
     }
@@ -2372,28 +2582,36 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       const configPath = path.resolve(settings.mcpConfigPath);
       const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
       const servers = parsed?.servers && typeof parsed.servers === "object" ? parsed.servers : {};
+      const entries = Object.entries(servers)
+        .filter(([, server]) => server?.disabled !== true && server?.enabled !== false)
+        .map(([id, server]) => ({
+          id,
+          command: String(server?.command || ""),
+          args: normalizeMcpArgs(server?.args),
+          env: server?.env && typeof server.env === "object" ? server.env : {},
+          url: String(server?.url || "")
+        }));
+      if (this.desktopAutomationMcpEnabled(settings)) {
+        entries.unshift(this.desktopAutomationMcpEntry(settings, workspacePath));
+      }
       return {
         configPath,
-        entries: Object.entries(servers)
-          .filter(([, server]) => server?.disabled !== true && server?.enabled !== false)
-          .map(([id, server]) => ({
-            id,
-            command: String(server?.command || ""),
-            args: normalizeMcpArgs(server?.args),
-            env: server?.env && typeof server.env === "object" ? server.env : {},
-            url: String(server?.url || "")
-          }))
+        entries
       };
     }
 
     const selected = enabledList(settings.enabledMcpServers);
+    const entries = selected
+      .map((id) => {
+        return this.mcpPresetEntry(id, workspacePath);
+      })
+      .filter(Boolean);
+    if (this.desktopAutomationMcpEnabled(settings)) {
+      entries.unshift(this.desktopAutomationMcpEntry(settings, workspacePath));
+    }
     return {
       configPath: "",
-      entries: selected
-        .map((id) => {
-          return this.mcpPresetEntry(id, workspacePath);
-        })
-        .filter(Boolean)
+      entries
     };
   }
 
@@ -2778,7 +2996,13 @@ process.exit(typeof result.status === "number" ? result.status : 1);
     settings.harnessEnabled = false;
     const workspacePath = normalizeWorkspace(settings.workspacePath);
     const runtimeMcpServerIds = this.runtimeMcpServerIds(settings, workspacePath);
-    const launchSettings = { ...settings, runtimeMcpServerIds, runtimeMcpReady: this.runtimeMcpReady(settings, workspacePath) };
+    const desktopAutomationMcpReady = this.desktopAutomationMcpEnabled(settings);
+    const launchSettings = {
+      ...settings,
+      runtimeMcpServerIds,
+      runtimeMcpReady: this.runtimeMcpReady(settings, workspacePath),
+      desktopAutomationMcpReady
+    };
     const runtime = this.resolveRuntime(settings);
     const args = this.buildArgs({ ...launchSettings, workspacePath });
     const env = this.buildEnv(launchSettings, workspacePath);
@@ -2869,6 +3093,9 @@ process.exit(typeof result.status === "number" ? result.status : 1);
       : this.runtimeMcpServerIds(options, workspacePath);
     if (options.mcpEnabled && runtimeMcpServerIds.length > 0) {
       env.DEEPSEEK_DESKTOP_ENABLED_MCP = runtimeMcpServerIds.join(",");
+    }
+    if (options.desktopAutomationMcpReady) {
+      env.DEEPSEEK_DESKTOP_AUTOMATION_MCP = "1";
     }
     if (typeof options.allowShell === "boolean") {
       env.DEEPSEEK_ALLOW_SHELL = options.allowShell ? "1" : "0";
@@ -2991,5 +3218,7 @@ process.exit(typeof result.status === "number" ? result.status : 1);
 module.exports = {
   DeepSeekDesktopHarness,
   copyBundledSkillDirectory,
-  defaultSettings
+  defaultSettings,
+  desktopProcessReasoningEffort,
+  normalizeDeepSeekThinkingMode
 };

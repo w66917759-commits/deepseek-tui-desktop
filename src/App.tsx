@@ -53,6 +53,7 @@ import {
 } from "lucide-react";
 import { getDesktopBridge } from "./desktopApi";
 import { shouldSubmitComposerShortcut } from "./composerKeys";
+import { formatProcessStreamOutput, normalizeDeepSeekThinkingMode, runtimeTurnOutputChunk } from "./processStream";
 
 type InspectorPanel = "skills" | "remote" | "git" | "settings" | null;
 type MainView = "chat" | "tools" | "tasks" | "terminal";
@@ -155,6 +156,7 @@ const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEEPSEEK_BETA_BASE_URL = "https://api.deepseek.com/beta";
 const NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
+const SCHEDULED_TASK_SKILL_ID = "scheduled-task-agent";
 const DEEPSEEK_V4_RELEASE_DOC_URL = "https://api-docs.deepseek.com/news/news260424";
 const DEEPSEEK_MODEL_PRICING_DOC_URL = "https://api-docs.deepseek.com/quick_start/pricing/";
 const ACTIVE_RUNTIME_TURN_STATUSES = new Set<RuntimeTurnStatus>(["queued", "running", "cancelling"]);
@@ -183,10 +185,11 @@ const defaultSettings: DesktopSettings = {
   allowShell: false,
   maxSubagents: 10,
   processStreamEnabled: true,
+  thinkingMode: "max",
   harnessEnabled: false,
   launchAction: "tui",
   rememberWorkspace: true,
-  enabledSkills: ["superpowers", "ui-ux-pro-max", "cron-scheduler", "skill-downloader"],
+  enabledSkills: ["superpowers", "ui-ux-pro-max", SCHEDULED_TASK_SKILL_ID, "cron-scheduler", "skill-downloader"],
   enabledMcpServers: [],
   mobileBridgeEnabled: false,
   mobileBridgeHost: "127.0.0.1",
@@ -214,9 +217,17 @@ const skillPresets: SkillPreset[] = [
     tools: ["Search", "Design System", "Visual QA"]
   },
   {
+    id: SCHEDULED_TASK_SKILL_ID,
+    name: "定时任务 Agent",
+    description: "把普通定时任务请求交给 Agent 的 Skill：先补齐任务、时间、工作区，再生成 cron、launchd 或一次性脚本方案。",
+    icon: "calendar",
+    category: "定时任务",
+    tools: ["Schedule", "Cron", "launchd"]
+  },
+  {
     id: "cron-scheduler",
     name: "Cron 高级脚本",
-    description: "仅用于需要手写 crontab 文件的高级场景；普通定时任务由定时任务界面管理。",
+    description: "仅用于需要手写 crontab 文件的高级场景；普通定时任务由定时任务 Agent Skill 处理。",
     icon: "calendar",
     category: "定时任务",
     tools: ["Advanced", "Cron", "Logs"]
@@ -571,7 +582,7 @@ const uiCopy = {
       navLabel: "对话列表",
       assistant: "DeepSeek 编程助手",
       running: "运行中",
-      automations: "定时任务",
+      automations: "定时任务 Skill",
       remote: "手机控制",
       git: "GitHub 版本",
       settings: "设置"
@@ -692,7 +703,7 @@ const uiCopy = {
       subtitles: {
         skills: "新增、导入并勾选启动时加载的 Skill",
         mcp: "勾选预设，也可以新增自定义 MCP",
-        automations: "创建、启用和暂停每天运行的本机定时任务",
+        automations: "以 Skill 方式引导 Agent 生成本机计划任务",
         remote: "手机查看进度、远程控制和更新提醒",
         git: "查看分支、远程仓库、变更、提交和推送",
         settings: "Workspace、运行环境和 Agent 参数"
@@ -716,6 +727,7 @@ const uiCopy = {
       created: (path: string) => `Skill 已新增：${path}`,
       imported: (count: number) => `已导入 ${count} 个 Skill`,
       saveFailed: "Skill 保存失败",
+      scheduledOpened: "定时任务现在作为默认 Skill 注入给 Agent；启用后，对话里提出定时、提醒、每天/每小时运行等请求会触发这个 Skill。",
       customCategory: "自定义",
       defaultTag: "默认",
       fileTag: "文件"
@@ -871,6 +883,11 @@ const uiCopy = {
       localRunner: "本机执行",
       logFile: "日志文件",
       command: "运行命令",
+      skillReady: "Skill 已注入",
+      bridgeReady: "Automation 工具已连接",
+      bridgeDisabled: "先启用定时任务 Skill",
+      cronActiveCount: (count: number) => `系统计划任务：${count} 个启用`,
+      latestError: "最近错误",
       lastGenerated: "更新时间",
       lastInstalled: "启用时间",
       saved: "定时任务已保存",
@@ -955,6 +972,8 @@ const uiCopy = {
       nvidiaKeyPlaceholder: "粘贴 NVIDIA NIM API Key",
       processStream: "开启流式输出",
       processStreamHint: "打开后右侧显示运行过程，并在启动时启用流式过程输出；关闭后只保留主对话回复。",
+      thinkingMode: "Thinking 模式",
+      thinkingModeHint: "默认 Max；High 保留较强推理但输出更克制，Off 关闭思考过程。",
       allowShell: "Allow shell",
       agents: "Agents",
       setup: "Setup",
@@ -1033,7 +1052,7 @@ const uiCopy = {
       navLabel: "Conversations",
       assistant: "DeepSeek coding assistant",
       running: "Running",
-      automations: "Scheduled Tasks",
+      automations: "Scheduled Skill",
       remote: "Mobile Control",
       git: "GitHub Versions",
       settings: "Settings"
@@ -1154,7 +1173,7 @@ const uiCopy = {
       subtitles: {
         skills: "Create, import, and enable launch-time Skills",
         mcp: "Enable presets or add custom MCP servers",
-        automations: "Create, activate, and pause local daily scheduled tasks",
+        automations: "Guide the Agent through local schedules as a Skill",
         remote: "Mobile progress, controls, and update alerts",
         git: "View branches, remotes, changes, commits, and pushes",
         settings: "Workspace, runtime, and Agent parameters"
@@ -1178,6 +1197,7 @@ const uiCopy = {
       created: (path: string) => `Skill created: ${path}`,
       imported: (count: number) => `${count} Skill${count === 1 ? "" : "s"} imported`,
       saveFailed: "Skill save failed",
+      scheduledOpened: "Scheduled tasks are now injected as a default Skill. When enabled, schedule, reminder, daily, hourly, or run-later requests should trigger it in chat.",
       customCategory: "Custom",
       defaultTag: "Default",
       fileTag: "File"
@@ -1333,6 +1353,11 @@ const uiCopy = {
       localRunner: "Local runner",
       logFile: "Log file",
       command: "Run command",
+      skillReady: "Skill injected",
+      bridgeReady: "Automation tools connected",
+      bridgeDisabled: "Enable the scheduled task Skill first",
+      cronActiveCount: (count: number) => `System schedules: ${count} active`,
+      latestError: "Latest error",
       lastGenerated: "Updated",
       lastInstalled: "Activated",
       saved: "Scheduled task saved",
@@ -1417,6 +1442,8 @@ const uiCopy = {
       nvidiaKeyPlaceholder: "Paste NVIDIA NIM API Key",
       processStream: "Enable streaming output",
       processStreamHint: "When enabled, the right-side run stream is shown and runtime process output is requested at launch. When disabled, only the main chat reply is kept.",
+      thinkingMode: "Thinking mode",
+      thinkingModeHint: "Defaults to Max. High keeps strong reasoning with a quieter stream; Off disables thinking output.",
       allowShell: "Allow shell",
       agents: "Agents",
       setup: "Setup",
@@ -1460,9 +1487,14 @@ const skillTranslations: Record<AppLanguage, Record<string, Partial<Pick<SkillPr
       description: "Complete UI/UX Pro Max design intelligence with searchable styles, palettes, typography, charts, UX rules, and stack guidance.",
       category: "Design"
     },
+    "scheduled-task-agent": {
+      name: "Scheduled Task Agent",
+      description: "Handles normal scheduled task requests as an Agent Skill: clarify task, time, and workspace, then produce cron, launchd, or one-off script artifacts.",
+      category: "Scheduled Tasks"
+    },
     "cron-scheduler": {
       name: "Cron Advanced Scripts",
-      description: "Advanced-only helper for hand-authored crontab files; normal scheduled tasks are managed by the Scheduled Tasks screen.",
+      description: "Advanced-only helper for hand-authored crontab files; normal scheduled tasks are handled by the Scheduled Task Agent Skill.",
       category: "Scheduled Tasks"
     },
     "skill-downloader": {
@@ -1584,7 +1616,8 @@ function normalizeSettings(settings: DesktopSettings): DesktopSettings {
     model: provider === "deepseek"
       ? normalizeDeepSeekModelSelection(settings.model)
       : settings.model || DEFAULT_DEEPSEEK_MODEL,
-    baseUrl: settings.baseUrl || defaultBaseUrlForProvider(provider)
+    baseUrl: settings.baseUrl || defaultBaseUrlForProvider(provider),
+    thinkingMode: normalizeDeepSeekThinkingMode(settings.thinkingMode)
   };
 }
 
@@ -2090,25 +2123,13 @@ function stripAnsi(value: string) {
 }
 
 function appendTerminalCapture(current: string, chunk: string) {
-  const next = `${current}${chunk}`;
-  return next.length > 60000 ? next.slice(-60000) : next;
-}
-
-function runtimeTurnOutputChunk(event: RuntimeTurnEvent) {
-  const eventType = event.event || event.type || "";
-  if (eventType === "response_delta" && typeof event.delta === "string") {
-    return event.delta;
-  }
-  if (eventType === "runtime_stderr" && typeof event.message === "string") {
-    return event.message;
-  }
-  return "";
+  return `${current}${chunk}`;
 }
 
 function terminalExcerpt(output: string, fallback: string) {
   const clean = stripAnsi(output);
   if (!clean) return fallback;
-  return clean.length > 6000 ? `...${clean.slice(-6000)}` : clean;
+  return clean;
 }
 
 function conversationAgentReply(output: string, fallback: string) {
@@ -2136,9 +2157,9 @@ function conversationAgentReply(output: string, fallback: string) {
     lines.push(line);
   }
   while (lines[lines.length - 1] === "") lines.pop();
-  const useful = lines.slice(-28).join("\n").trim();
+  const useful = lines.join("\n").trim();
   if (!useful) return fallback;
-  return useful.length > 2400 ? `...${useful.slice(-2400)}` : useful;
+  return useful;
 }
 
 function formatConversationRunReply(capture: RunCapture, exit: { exitCode?: number; signal?: number }, language: AppLanguage) {
@@ -2266,6 +2287,7 @@ function App() {
   const fitRef = useRef<FitAddon | null>(null);
   const activeSessionIdRef = useRef("");
   const terminalRunSessionIdRef = useRef("");
+  const terminalRawOutputBySessionRef = useRef<Record<string, string>>({});
   const terminalOutputBySessionRef = useRef<Record<string, string>>({});
   const runCaptureRef = useRef<RunCapture | null>(null);
   const desktop = useMemo(() => getDesktopBridge(), []);
@@ -2401,6 +2423,32 @@ function App() {
     };
   }, [desktop]);
 
+  const appendProcessStreamForSession = useCallback((sessionId: string, chunk: string) => {
+    if (!sessionId || !chunk) return "";
+    const raw = appendTerminalCapture(terminalRawOutputBySessionRef.current[sessionId] || "", chunk);
+    terminalRawOutputBySessionRef.current[sessionId] = raw;
+    const output = formatProcessStreamOutput(raw);
+    terminalOutputBySessionRef.current[sessionId] = output;
+    return output;
+  }, []);
+
+  const renderTerminalForSession = useCallback((sessionId?: string) => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.clear();
+    const output = sessionId
+      ? mainView === "terminal"
+        ? terminalRawOutputBySessionRef.current[sessionId] || terminalOutputBySessionRef.current[sessionId] || ""
+        : terminalOutputBySessionRef.current[sessionId] || ""
+      : "";
+    if (output) {
+      terminal.write(output);
+      return;
+    }
+    terminal.write(t.terminal.bootReady);
+    terminal.write(t.terminal.bootHint);
+  }, [mainView, t]);
+
   useEffect(() => {
     let active = true;
     desktop.getRuntimeOrchestratorSnapshot().then((snapshot) => {
@@ -2417,12 +2465,13 @@ function App() {
       const sessionId = event.conversationId || "";
       const chunk = runtimeTurnOutputChunk(event);
       if (sessionId && chunk) {
-        terminalOutputBySessionRef.current[sessionId] = appendTerminalCapture(
-          terminalOutputBySessionRef.current[sessionId] || "",
-          chunk
-        );
+        appendProcessStreamForSession(sessionId, chunk);
         if (activeSessionIdRef.current === sessionId) {
-          terminalRef.current?.write(chunk);
+          if (mainView === "terminal") {
+            terminalRef.current?.write(chunk);
+          } else {
+            renderTerminalForSession(sessionId);
+          }
         }
       }
       if (eventType === "turn-started") {
@@ -2470,7 +2519,7 @@ function App() {
       offSnapshot();
       offTurn();
     };
-  }, [commitConversationStore, desktop, language, t]);
+  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, mainView, renderTerminalForSession, t]);
 
   const fitTerminal = useCallback(() => {
     const host = terminalHostRef.current;
@@ -2487,19 +2536,6 @@ function App() {
       // xterm can briefly report incomplete dimensions while the terminal pane is hidden.
     }
   }, [desktop]);
-
-  const renderTerminalForSession = useCallback((sessionId?: string) => {
-    const terminal = terminalRef.current;
-    if (!terminal) return;
-    terminal.clear();
-    const output = sessionId ? terminalOutputBySessionRef.current[sessionId] : "";
-    if (output) {
-      terminal.write(output);
-      return;
-    }
-    terminal.write(t.terminal.bootReady);
-    terminal.write(t.terminal.bootHint);
-  }, [t]);
 
   const updateSetting = useCallback(<K extends keyof DesktopSettings>(key: K, value: DesktopSettings[K]) => {
     setSettings((current) => ({ ...current, [key]: value }));
@@ -2581,7 +2617,7 @@ function App() {
       }
       return current;
     });
-    if (!terminalOutputBySessionRef.current[activeSessionIdRef.current]) {
+    if (!terminalRawOutputBySessionRef.current[activeSessionIdRef.current] && !terminalOutputBySessionRef.current[activeSessionIdRef.current]) {
       renderTerminalForSession(activeSessionIdRef.current);
     }
   }, [language, renderTerminalForSession]);
@@ -2757,16 +2793,17 @@ function App() {
       const capture = runCaptureRef.current;
       const terminalSessionId = capture?.sessionId || terminalRunSessionIdRef.current || activeSessionIdRef.current;
       if (terminalSessionId) {
-        terminalOutputBySessionRef.current[terminalSessionId] = appendTerminalCapture(
-          terminalOutputBySessionRef.current[terminalSessionId] || "",
-          data
-        );
+        appendProcessStreamForSession(terminalSessionId, data);
       }
       if (capture) {
         capture.output = appendTerminalCapture(capture.output, data);
       }
       if (!terminalSessionId || activeSessionIdRef.current === terminalSessionId) {
-        terminalRef.current?.write(data);
+        if (mainView === "terminal") {
+          terminalRef.current?.write(data);
+        } else if (terminalSessionId) {
+          renderTerminalForSession(terminalSessionId);
+        }
       }
     });
     const offExit = desktop.onTerminalExit((exit) => {
@@ -2800,12 +2837,15 @@ function App() {
       offData();
       offExit();
     };
-  }, [commitConversationStore, desktop, language, t]);
+  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, mainView, renderTerminalForSession, t]);
 
   const enabledMcpCount = settings.enabledMcpServers.length;
   const enabledSkillCount = settings.enabledSkills.length;
   const skillsRuntimeReady = settings.skillsEnabled && (settings.enabledSkills.length > 0 || Boolean(settings.skillsDir.trim()));
-  const installedAutomationCount = automationTasks.filter((task) => automationStatus(task) === "ACTIVE").length;
+  const scheduledTaskSkillEnabled = settings.skillsEnabled && settings.enabledSkills.includes(SCHEDULED_TASK_SKILL_ID);
+  const activeAutomationCount = automationTasks.filter((task) => automationStatus(task) === "ACTIVE" && task.installed).length;
+  const latestAutomationError = automationTasks.find((task) => Boolean(task.error))?.error || "";
+  const latestAutomationLogPath = automationTasks.find((task) => Boolean(task.logPath))?.logPath || "";
   const skillCatalog = useMemo<SkillCatalogItem[]>(() => {
     const templates = customization?.skillTemplates || {};
     const presetMap = new Map(skillPresets.map((preset) => [preset.id, preset]));
@@ -2975,6 +3015,7 @@ function App() {
           workspacePath: selected,
           updatedAt: new Date().toISOString()
         };
+        terminalRawOutputBySessionRef.current[nextSession.id] = "";
         terminalOutputBySessionRef.current[nextSession.id] = "";
         nextStore = upsertConversationSession(conversationStore, nextSession, language);
       }
@@ -3243,6 +3284,7 @@ function App() {
     const terminalSessionId = captureSessionId || activeSessionIdRef.current;
     terminalRunSessionIdRef.current = terminalSessionId;
     if (terminalSessionId) {
+      terminalRawOutputBySessionRef.current[terminalSessionId] = "";
       terminalOutputBySessionRef.current[terminalSessionId] = "";
       if (activeSessionIdRef.current === terminalSessionId) {
         renderTerminalForSession(terminalSessionId);
@@ -3565,6 +3607,7 @@ function App() {
     });
     setAgentPrompt("");
     setStatus({ type: "launching" });
+    terminalRawOutputBySessionRef.current[targetSessionId] = "";
     terminalOutputBySessionRef.current[targetSessionId] = "";
     if (activeSessionIdRef.current === targetSessionId) {
       renderTerminalForSession(targetSessionId);
@@ -3695,6 +3738,7 @@ function App() {
   const removeConversation = useCallback((sessionId: string) => {
     const nextStore = deleteConversationSession(conversationStore, sessionId);
     const nextSession = findConversationSession(nextStore, nextStore.activeSessionId);
+    delete terminalRawOutputBySessionRef.current[sessionId];
     delete terminalOutputBySessionRef.current[sessionId];
     applyConversationStore(nextStore);
     activeSessionIdRef.current = nextSession?.id || "";
@@ -3902,8 +3946,10 @@ function App() {
 
   const openScheduledTasksPage = useCallback(() => {
     setInspectorPanel(null);
-    setMainView("tasks");
-  }, []);
+    setToolPage("skills");
+    setMainView("tools");
+    setTemplateMessage(t.skills.scheduledOpened);
+  }, [t]);
 
   const toggleInspectorPanel = useCallback((panel: Exclude<InspectorPanel, null>) => {
     setInspectorPanel((current) => current === panel ? null : panel);
@@ -4146,6 +4192,7 @@ function App() {
             onClick={() => {
               const sessionId = activeSessionIdRef.current;
               if (sessionId) {
+                terminalRawOutputBySessionRef.current[sessionId] = "";
                 terminalOutputBySessionRef.current[sessionId] = "";
               }
               renderTerminalForSession(sessionId);
@@ -4530,6 +4577,27 @@ function App() {
         </div>
       </div>
 
+      <div className="automation-connection-grid">
+        <div className="automation-connection-item">
+          <span className={scheduledTaskSkillEnabled ? "status-chip enabled" : "status-chip warning"}>
+            {scheduledTaskSkillEnabled ? t.automations.skillReady : t.automations.bridgeDisabled}
+          </span>
+          <small>{scheduledTaskSkillEnabled ? t.automations.bridgeReady : t.skills.runtimeHint}</small>
+        </div>
+        <div className="automation-connection-item">
+          <span className={activeAutomationCount > 0 ? "status-chip enabled" : "status-chip"}>
+            {t.automations.cronActiveCount(activeAutomationCount)}
+          </span>
+          <small>{latestAutomationLogPath || t.automations.noTasks}</small>
+        </div>
+        {latestAutomationError ? (
+          <div className="automation-connection-item error">
+            <span className="status-chip warning">{t.automations.latestError}</span>
+            <small>{latestAutomationError}</small>
+          </div>
+        ) : null}
+      </div>
+
       <section className="template-editor automation-editor">
         <div className="template-editor-head">
           <div>
@@ -4828,7 +4896,7 @@ function App() {
           >
             <CalendarClock size={16} aria-hidden />
             {t.sidebar.automations}
-            <span className="sidebar-badge">{installedAutomationCount}</span>
+            <span className="sidebar-badge">{scheduledTaskSkillEnabled ? 1 : 0}</span>
           </button>
           <button
             type="button"
@@ -5789,6 +5857,22 @@ function App() {
                 <span>{t.settings.processStream}</span>
               </label>
               <small className="field-hint">{t.settings.processStreamHint}</small>
+              <label>
+                {t.settings.thinkingMode}
+                <span className="select-wrap">
+                  <select
+                    value={normalizeDeepSeekThinkingMode(settings.thinkingMode)}
+                    onChange={(event) => updateSetting("thinkingMode", normalizeDeepSeekThinkingMode(event.target.value))}
+                    disabled={settings.provider !== "deepseek"}
+                  >
+                    <option value="max">Max</option>
+                    <option value="high">High</option>
+                    <option value="off">Off</option>
+                  </select>
+                  <ChevronDown size={14} aria-hidden />
+                </span>
+              </label>
+              <small className="field-hint">{t.settings.thinkingModeHint}</small>
               <details className="advanced-settings">
                 <summary>
                   <span>{t.settings.advancedRuntime}</span>

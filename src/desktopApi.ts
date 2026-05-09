@@ -13,10 +13,11 @@ const previewSettings: DesktopSettings = {
   allowShell: false,
   maxSubagents: 10,
   processStreamEnabled: true,
+  thinkingMode: "max",
   harnessEnabled: false,
   launchAction: "tui",
   rememberWorkspace: true,
-  enabledSkills: ["superpowers", "ui-ux-pro-max", "cron-scheduler", "skill-downloader"],
+  enabledSkills: ["superpowers", "ui-ux-pro-max", "scheduled-task-agent", "cron-scheduler", "skill-downloader"],
   enabledMcpServers: [],
   mobileBridgeEnabled: false,
   mobileBridgeHost: "127.0.0.1",
@@ -100,15 +101,40 @@ const previewSkillTemplateDefaults: Record<string, string> = {
     "- A missing credential, placeholder URL, invalid URL, or missing command should read as blocked and should explain the exact missing piece.",
     "- Keep status chips short and pair them with concise helper text when the consequence matters."
   ].join("\n"),
+  "scheduled-task-agent": [
+    "---",
+    "name: scheduled-task-agent",
+    "description: Use when the user asks to create, plan, write, schedule, run later, repeat, remind, cron, launchd, background task, automation, recurring job, 定时任务, 自动任务, 提醒, 每天, 每小时, or 稍后执行 inside DeepSeek TUI Desktop.",
+    "---",
+    "",
+    "# Scheduled Task Agent",
+    "",
+    "Use this skill for normal scheduled-task requests in DeepSeek TUI Desktop.",
+    "",
+    "## Tool Contract",
+    "",
+    "- For normal scheduled-task requests, call the built-in `automation_create` tool.",
+    "- Use `automation_list`, `automation_pause`, and `automation_delete` when the user asks to inspect, pause, or remove scheduled tasks.",
+    "- Only use the advanced `cron-scheduler` Skill when the user explicitly asks for a raw cron file or crontab snippet.",
+    "- Do not ask the user to manually open the Scheduled Tasks page when the task can be created from the conversation.",
+    "",
+    "## Workflow",
+    "",
+    "1. Normalize the request into: task goal, Agent prompt, workspace, local wall-clock time, timezone, and active/paused status.",
+    "2. If the task goal, workspace, hour, or minute is missing, ask only for the missing fields.",
+    "3. If enough information is present, call `automation_create` with `prompt`, `workspacePath`, `hour`, `minute`, optional `name`, optional `timezone`, and `status` (default `ACTIVE`).",
+    "4. After the tool returns, report the task id, activation status, cron path, log path, and any error.",
+    "5. If the tool reports a credential or runtime problem, tell the user the exact missing piece instead of writing a separate cron file."
+  ].join("\n"),
   "cron-scheduler": [
     "---",
     "name: cron-scheduler",
-    "description: Advanced-only helper for hand-authored crontab files. Normal scheduled tasks are managed by the Scheduled Tasks screen.",
+    "description: Advanced-only helper for hand-authored crontab files. Normal scheduled tasks are handled by the Scheduled Task Agent Skill.",
     "---",
     "",
     "# Cron Advanced Scripts",
     "",
-    "Use this skill only when the user explicitly asks for a raw cron file or crontab snippet. For normal recurring Agent tasks, use the desktop Scheduled Tasks screen.",
+    "Use this skill only when the user explicitly asks for a raw cron file or crontab snippet. For normal recurring Agent tasks, use the Scheduled Task Agent Skill.",
     "",
     "- Treat this as an advanced escape hatch, not the default scheduled-task workflow.",
     "- Generate and validate a cron file before discussing installation.",
@@ -750,32 +776,37 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
 	      const turnId = `preview-turn-${Date.now().toString(36)}`;
 	      const conversationId = payload.conversationId || "preview-conversation";
 	      const threadId = `preview-thread-${conversationId}`;
-	      const turn: RuntimeTurn = {
+	      const streamChunks = [
+	        "Preview runtime stream\n",
+	        `Workspace: ${payload.workspacePath || previewSettings.workspacePath}\n`,
+	        `Prompt: ${payload.prompt}\n`
+	      ];
+	      const output = streamChunks.join("").trim();
+	      const runningTurn: RuntimeTurn = {
 	        turnId,
 	        conversationId,
 	        threadId,
-	        status: "completed",
+	        status: "running",
 	        prompt: payload.prompt,
-	        output: `Preview runtime accepted: ${payload.prompt}`,
+	        output: "",
 	        error: "",
 	        queuedAt: now,
 	        startedAt: now,
-	        completedAt: now,
+	        completedAt: "",
 	        replyMessageId: payload.replyMessageId || "",
 	        queuePosition: 0
 	      };
-	      const event: RuntimeTurnEvent = { ...turn, type: "turn-completed", at: now };
 	      previewRuntimeOrchestratorSnapshot = {
 	        ...previewRuntimeOrchestratorSnapshot,
-	        status: "idle",
-	        activeCount: 0,
+	        status: "running",
+	        activeCount: 1,
 	        queueDepth: 0,
 	        counts: {
 	          total: previewRuntimeOrchestratorSnapshot.counts.total + 1,
 	          queued: 0,
-	          running: 0,
+	          running: 1,
 	          cancelling: 0,
-	          completed: previewRuntimeOrchestratorSnapshot.counts.completed + 1,
+	          completed: previewRuntimeOrchestratorSnapshot.counts.completed,
 	          failed: 0,
 	          cancelled: 0
 	        },
@@ -783,15 +814,49 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
 	          conversationId,
 	          workspacePath: payload.workspacePath,
 	          threadId,
-	          activeTurnId: "",
+	          activeTurnId: turnId,
 	          queuedTurnIds: [],
-	          status: "idle",
+	          status: "running",
 	          updatedAt: now
 	        }],
-	        turns: [...previewRuntimeOrchestratorSnapshot.turns, turn].slice(-50)
+	        turns: [...previewRuntimeOrchestratorSnapshot.turns, runningTurn].slice(-50)
 	      };
 	      runtimeOrchestratorSnapshots.forEach((listener) => listener(previewRuntimeOrchestratorSnapshot));
-	      runtimeTurnEvents.forEach((listener) => listener(event));
+	      runtimeTurnEvents.forEach((listener) => listener({ ...runningTurn, type: "turn-started", at: now }));
+	      for (const chunk of streamChunks) {
+	        runtimeTurnEvents.forEach((listener) => listener({
+	          ...runningTurn,
+	          type: "response_delta",
+	          detail: chunk,
+	          at: new Date().toISOString()
+	        }));
+	      }
+	      const completedAt = new Date().toISOString();
+	      const completedTurn: RuntimeTurn = {
+	        ...runningTurn,
+	        status: "completed",
+	        output,
+	        completedAt
+	      };
+	      previewRuntimeOrchestratorSnapshot = {
+	        ...previewRuntimeOrchestratorSnapshot,
+	        status: "idle",
+	        activeCount: 0,
+	        counts: {
+	          ...previewRuntimeOrchestratorSnapshot.counts,
+	          running: 0,
+	          completed: previewRuntimeOrchestratorSnapshot.counts.completed + 1
+	        },
+	        conversations: previewRuntimeOrchestratorSnapshot.conversations.map((conversation) => conversation.conversationId === conversationId ? {
+	          ...conversation,
+	          activeTurnId: "",
+	          status: "idle",
+	          updatedAt: completedAt
+	        } : conversation),
+	        turns: previewRuntimeOrchestratorSnapshot.turns.map((turn) => turn.turnId === turnId ? completedTurn : turn)
+	      };
+	      runtimeOrchestratorSnapshots.forEach((listener) => listener(previewRuntimeOrchestratorSnapshot));
+	      runtimeTurnEvents.forEach((listener) => listener({ ...completedTurn, type: "turn-completed", at: completedAt }));
 	      return { ok: true, queued: false, turnId, conversationId, threadId, snapshot: previewRuntimeOrchestratorSnapshot };
 	    },
 	    cancelRuntimeTurn: async (payload) => {

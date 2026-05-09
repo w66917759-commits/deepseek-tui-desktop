@@ -212,8 +212,10 @@ label {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 6px;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
+  max-height: min(44vh, 360px);
+  overflow: hidden;
 }
 
 .history-scroll-pane {
@@ -485,7 +487,8 @@ label {
 }
 
 .sidebar-spacer {
-  flex: 0 0 0;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .sidebar-actions {
@@ -2243,6 +2246,36 @@ label {
   align-self: end;
 }
 
+.automation-connection-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.automation-connection-item {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.automation-connection-item.error {
+  grid-column: 1 / -1;
+  border-color: #f4c7c3;
+  background: #fff7f5;
+}
+
+.automation-connection-item small {
+  overflow: hidden;
+  color: #667085;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .automation-preview {
   display: grid;
   gap: 5px;
@@ -3895,6 +3928,7 @@ button.skill-card:hover {
   .runtime-api-grid,
   .git-meta-grid,
   .git-actions,
+  .automation-connection-grid,
   .automation-time-grid,
   .automation-actions {
     grid-template-columns: 1fr;

@@ -63,7 +63,8 @@ function launchKeyFor(settings, runtimePath, workspacePath) {
     mcpEnabled: settings.mcpEnabled,
     enabledMcpServers: settings.enabledMcpServers || [],
     allowShell: settings.allowShell,
-    maxSubagents: settings.maxSubagents
+    maxSubagents: settings.maxSubagents,
+    thinkingMode: settings.thinkingMode
   });
 }
 
