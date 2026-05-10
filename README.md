@@ -153,6 +153,21 @@ Verify the debug-signed app:
 codesign --verify --deep --strict --verbose=2 "release/mac-arm64/DeepSeek TUI Desktop.app"
 ```
 
+Build a Developer ID signed + notarized release DMG:
+
+```bash
+APPLE_API_ISSUER="<issuer-uuid>" CSC_KEY_PASSWORD="<p12-password>" npm run dist:mac:official
+```
+
+Notes:
+- `dist:mac:official` defaults the signing identity to `Developer ID Application: chen He (3ZN7R3Z947)` on this machine unless `DEEPSEEK_TUI_MAC_SIGN_IDENTITY` is set.
+- It auto-discovers `AuthKey_*.p8` from `/Users/west/project/appkey` unless `APPLE_API_KEY_PATH` is set.
+- It auto-discovers the first `.p12` signing certificate from `/Users/west/project/appkey` unless `CSC_LINK` is set.
+- `CSC_KEY_PASSWORD` is required so the release script can create a temporary signing keychain, import the Developer ID certificate chain, and run `codesign` / `notarytool` non-interactively.
+- The release script automatically downloads the matching Apple Developer ID intermediate certificate from `apple.com/certificateauthority` based on the issuer of your local `developerID_application.cer`.
+- If needed, you can override `APPLE_API_KEY_ID` explicitly; otherwise it is parsed from the `AuthKey_*.p8` filename.
+- The official flow rebuilds the app, signs the DMG, submits it to Apple notarization, staples the ticket, then validates with `codesign`, `spctl`, and `hdiutil`.
+
 ### Windows Installer
 
 ```bash

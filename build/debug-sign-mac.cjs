@@ -14,11 +14,14 @@ exports.sign = async function signDebugMacApp(options) {
 
   const identity =
     process.env.DEEPSEEK_TUI_MAC_SIGN_IDENTITY || options.identity || "-";
+  const keychain =
+    process.env.DEEPSEEK_TUI_MAC_SIGN_KEYCHAIN || options.keychain;
   const isAdHoc = identity === "-";
 
   await signAsync({
     ...options,
     identity,
+    keychain,
     identityValidation: false,
     preAutoEntitlements: isAdHoc ? false : options.preAutoEntitlements,
   });

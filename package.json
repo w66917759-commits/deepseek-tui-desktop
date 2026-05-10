@@ -1,6 +1,6 @@
 {
   "name": "deepseek-tui-desktop",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Desktop shell for DeepSeek TUI coding agent.",
   "main": "electron/main.cjs",
@@ -12,6 +12,7 @@
     "runtime:sync-local": "node scripts/sync-local-runtime.cjs",
     "prepare:win-runtime": "node scripts/prepare-win-runtime.cjs",
     "dist:mac": "npm run build && electron-builder --mac dmg --arm64",
+    "dist:mac:official": "node scripts/release-mac-official.cjs",
     "dist:win": "npm run prepare:win-runtime && npm run build && electron-builder --win nsis --x64 -c.npmRebuild=false"
   },
   "dependencies": {
