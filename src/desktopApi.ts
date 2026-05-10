@@ -11,6 +11,8 @@ const previewSettings: DesktopSettings = {
   skillsEnabled: true,
   mcpEnabled: false,
   allowShell: false,
+  layeredContextEnabled: true,
+  contextVerbatimWindowTurns: 16,
   maxSubagents: 10,
   processStreamEnabled: true,
   thinkingMode: "max",

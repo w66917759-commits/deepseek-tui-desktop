@@ -146,11 +146,13 @@ declare global {
     baseUrl: string;
     mcpConfigPath: string;
     skillsDir: string;
-    skillsEnabled: boolean;
-    mcpEnabled: boolean;
-    allowShell: boolean;
-    maxSubagents: number;
-    processStreamEnabled: boolean;
+	    skillsEnabled: boolean;
+	    mcpEnabled: boolean;
+	    allowShell: boolean;
+	    layeredContextEnabled: boolean;
+	    contextVerbatimWindowTurns: number;
+	    maxSubagents: number;
+	    processStreamEnabled: boolean;
     thinkingMode: DeepSeekThinkingMode;
     harnessEnabled: boolean;
     launchAction: LaunchAction;
@@ -280,6 +282,12 @@ declare global {
     content: string;
   }
 
+  interface ContextAnchor {
+    id: string;
+    text: string;
+    createdAt: string;
+  }
+
   interface ConversationSession {
     id: string;
     projectId: string;
@@ -290,6 +298,7 @@ declare global {
     createdAt: string;
     updatedAt: string;
     messages: ConversationMessage[];
+    contextAnchors?: ContextAnchor[];
   }
 
   interface ConversationProject {

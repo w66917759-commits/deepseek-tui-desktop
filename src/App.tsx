@@ -53,11 +53,20 @@ import {
 } from "lucide-react";
 import { getDesktopBridge } from "./desktopApi";
 import { shouldSubmitComposerShortcut } from "./composerKeys";
+import {
+  buildAnchoredRuntimePrompt,
+  deriveContextAnchorTextsFromRuntimeItems,
+  mergeDerivedContextAnchors,
+  normalizeContextAnchors,
+  selectContextAnchorDraft
+} from "./contextAnchors";
 import { formatProcessStreamOutput, normalizeDeepSeekThinkingMode, runtimeTurnOutputChunk } from "./processStream";
 import {
   appendRuntimePromptMessages,
+  buildRecallArchivePrompt,
   conversationMessagesFromRuntimeDetail,
   orderedRuntimeConversationItems,
+  summarizeRuntimeContextHealth,
   shouldRenderRuntimeConversation
 } from "./runtimeConversation";
 
@@ -190,6 +199,8 @@ const defaultSettings: DesktopSettings = {
   skillsEnabled: true,
   mcpEnabled: false,
   allowShell: false,
+  layeredContextEnabled: true,
+  contextVerbatimWindowTurns: 16,
   maxSubagents: 10,
   processStreamEnabled: true,
   thinkingMode: "max",
@@ -659,6 +670,23 @@ const uiCopy = {
 	      unavailable: "Runtime API 不可用，主聊天 CLI runner 不受影响。",
 	      toggleFailed: "Skill 状态更新失败"
 	    },
+	    runtimeContext: {
+	      title: "上下文保留",
+	      enabled: "分层上下文已开启",
+	      disabled: "分层上下文已关闭",
+	      recentTurns: (count: number) => `最近 ${count} 轮逐字保留`,
+	      seams: (count: number) => `${count} 个 seam`,
+	      compactions: (count: number) => `${count} 次 compaction`,
+	      approvals: (count: number) => `${count} 个审批待处理`,
+	      questions: (count: number) => `${count} 个追问待处理`,
+	      waiting: "等待用户输入",
+	      running: "正在执行",
+	      completed: "本轮完成",
+	      recall: "回拉旧上下文",
+	      recallHint: "当长任务已经跨周期或做过 compaction 时，可以用它把旧归档重新拉回当前任务。",
+	      pin: "固定当前锚点",
+	      noAnchors: "还没有固定锚点。建议把不会变的关键约束固定下来。"
+	    },
 	    terminal: {
 	      streamTitle: "流式输出",
 	      clear: "清空输出",
@@ -980,13 +1008,17 @@ const uiCopy = {
       apiKeyHint: "保存后作为全局登录密钥，之后所有 workspace 默认使用；不会写入项目历史。",
       deepseekKeyPlaceholder: "粘贴 DeepSeek API Key",
       nvidiaKeyPlaceholder: "粘贴 NVIDIA NIM API Key",
-      processStream: "开启流式输出",
-      processStreamHint: "打开后右侧显示运行过程，并在启动时启用流式过程输出；关闭后只保留主对话回复。",
-      thinkingMode: "Thinking 模式",
-      thinkingModeHint: "默认 Max；High 保留较强推理但输出更克制，Off 关闭思考过程。",
-      allowShell: "Allow shell",
-      agents: "Agents",
-      setup: "Setup",
+	      processStream: "开启流式输出",
+	      processStreamHint: "打开后右侧显示运行过程，并在启动时启用流式过程输出；关闭后只保留主对话回复。",
+	      thinkingMode: "Thinking 模式",
+	      thinkingModeHint: "默认 Max；High 保留较强推理但输出更克制，Off 关闭思考过程。",
+	      layeredContext: "分层上下文保留",
+	      layeredContextHint: "默认开启后，长任务会先生成 append-only context seams，再进入 hard cycle，减少忘记前文的情况。",
+	      contextVerbatimWindowTurns: "最近逐字保留轮数",
+	      contextVerbatimWindowTurnsHint: "最近 N 轮保持原文，其余更早内容交给 seam 摘要。建议保持在 8-32 之间。",
+	      allowShell: "Allow shell",
+	      agents: "Agents",
+	      setup: "Setup",
       apiKeySaveFailed: "API Key 保存失败",
       save: "保存设置"
     },
@@ -1131,6 +1163,23 @@ const uiCopy = {
 	      authOff: "Auth disabled",
 	      unavailable: "Runtime API is unavailable; the main chat CLI runner is unaffected.",
 	      toggleFailed: "Skill update failed"
+	    },
+	    runtimeContext: {
+	      title: "Context retention",
+	      enabled: "Layered context on",
+	      disabled: "Layered context off",
+	      recentTurns: (count: number) => `${count} recent turns kept verbatim`,
+	      seams: (count: number) => `${count} seam${count === 1 ? "" : "s"}`,
+	      compactions: (count: number) => `${count} compaction${count === 1 ? "" : "s"}`,
+	      approvals: (count: number) => `${count} approval${count === 1 ? "" : "s"} pending`,
+	      questions: (count: number) => `${count} question${count === 1 ? "" : "s"} pending`,
+	      waiting: "Waiting for input",
+	      running: "Running",
+	      completed: "Turn complete",
+	      recall: "Recall archive",
+	      recallHint: "Use this when a long task crossed a cycle or compaction and you want the runtime to pull archived context back into the task.",
+	      pin: "Pin anchor",
+	      noAnchors: "No pinned anchors yet. Save the stable constraints that the task should keep."
 	    },
 	    terminal: {
 	      streamTitle: "Streaming output",
@@ -1453,13 +1502,17 @@ const uiCopy = {
       apiKeyHint: "Saved as a global sign-in key and reused for every workspace; it is not written to project history.",
       deepseekKeyPlaceholder: "Paste DeepSeek API Key",
       nvidiaKeyPlaceholder: "Paste NVIDIA NIM API Key",
-      processStream: "Enable streaming output",
-      processStreamHint: "When enabled, the right-side run stream is shown and runtime process output is requested at launch. When disabled, only the main chat reply is kept.",
-      thinkingMode: "Thinking mode",
-      thinkingModeHint: "Defaults to Max. High keeps strong reasoning with a quieter stream; Off disables thinking output.",
-      allowShell: "Allow shell",
-      agents: "Agents",
-      setup: "Setup",
+	      processStream: "Enable streaming output",
+	      processStreamHint: "When enabled, the right-side run stream is shown and runtime process output is requested at launch. When disabled, only the main chat reply is kept.",
+	      thinkingMode: "Thinking mode",
+	      thinkingModeHint: "Defaults to Max. High keeps strong reasoning with a quieter stream; Off disables thinking output.",
+	      layeredContext: "Layered context retention",
+	      layeredContextHint: "When enabled, long tasks produce append-only context seams before a hard cycle, which reduces dropped details across long runs.",
+	      contextVerbatimWindowTurns: "Recent verbatim turns",
+	      contextVerbatimWindowTurnsHint: "Keeps the most recent N turns verbatim and lets older turns move behind seam summaries. A range of 8-32 is usually enough.",
+	      allowShell: "Allow shell",
+	      agents: "Agents",
+	      setup: "Setup",
       apiKeySaveFailed: "API key save failed",
       save: "Save settings"
     },
@@ -1630,8 +1683,16 @@ function normalizeSettings(settings: DesktopSettings): DesktopSettings {
       ? normalizeDeepSeekModelSelection(settings.model)
       : settings.model || DEFAULT_DEEPSEEK_MODEL,
     baseUrl: settings.baseUrl || defaultBaseUrlForProvider(provider),
-    thinkingMode: normalizeDeepSeekThinkingMode(settings.thinkingMode)
+    thinkingMode: normalizeDeepSeekThinkingMode(settings.thinkingMode),
+    layeredContextEnabled: settings.layeredContextEnabled !== false,
+    contextVerbatimWindowTurns: normalizeContextVerbatimWindowTurns(settings.contextVerbatimWindowTurns)
   };
+}
+
+function normalizeContextVerbatimWindowTurns(value: number) {
+  const turns = Number(value);
+  if (!Number.isInteger(turns)) return 16;
+  return Math.min(64, Math.max(4, turns));
 }
 
 function defaultTimezone() {
@@ -1993,7 +2054,8 @@ function createConversationSession(
     title: uiCopy[language].history.untitled,
     createdAt: now,
     updatedAt: now,
-    messages
+    messages,
+    contextAnchors: []
   };
 }
 
@@ -2095,7 +2157,8 @@ function normalizeConversationStore(store: ConversationStore, settings: DesktopS
         sessions: Array.isArray(project.sessions)
           ? project.sessions.map((session) => ({
             ...session,
-            messages: sanitizeConversationMessages(Array.isArray(session.messages) ? session.messages : [], language)
+            messages: sanitizeConversationMessages(Array.isArray(session.messages) ? session.messages : [], language),
+            contextAnchors: normalizeContextAnchors(Array.isArray(session.contextAnchors) ? session.contextAnchors : [])
           }))
           : []
       }))
@@ -2267,6 +2330,19 @@ function runtimeThreadEventOutputChunk(event: RuntimeApiThreadEventRecord) {
   return "";
 }
 
+function runtimeContextTurnStatusLabel(status: string, language: AppLanguage) {
+  if (status === "waiting_user_input") {
+    return uiCopy[language].runtimeContext.waiting;
+  }
+  if (status === "in_progress") {
+    return uiCopy[language].runtimeContext.running;
+  }
+  if (status === "completed") {
+    return uiCopy[language].runtimeContext.completed;
+  }
+  return status;
+}
+
 function App() {
   const [settings, setSettings] = useState<DesktopSettings>(defaultSettings);
   const [runtime, setRuntime] = useState<RuntimeCheck | null>(null);
@@ -2369,6 +2445,18 @@ function App() {
   const activeRuntimeThreadItems = useMemo(
     () => orderedRuntimeConversationItems(activeRuntimeThreadDetail) as RuntimeApiItemRecord[],
     [activeRuntimeThreadDetail]
+  );
+  const activeRuntimeContextHealth = useMemo(
+    () => summarizeRuntimeContextHealth(activeRuntimeThreadDetail, settings.layeredContextEnabled !== false),
+    [activeRuntimeThreadDetail, settings.layeredContextEnabled]
+  );
+  const activeSessionAnchors = useMemo(
+    () => normalizeContextAnchors(activeSession?.contextAnchors || []),
+    [activeSession?.contextAnchors]
+  );
+  const contextAnchorDraft = useMemo(
+    () => selectContextAnchorDraft(agentPrompt, activeRuntimeContextHealth.latestUserPrompt, language),
+    [activeRuntimeContextHealth.latestUserPrompt, agentPrompt, language]
   );
   const shouldShowRuntimeConversation = useMemo(
     () => shouldRenderRuntimeConversation(activeRuntimeThreadDetail),
@@ -3338,28 +3426,54 @@ function App() {
     await refreshRuntimeApi();
   }, [desktop, refreshRuntimeApi, settings, t]);
 
+  const syncRuntimeDetailAnchors = useCallback((sessionId: string, detail: RuntimeApiThreadDetail | null | undefined) => {
+    if (!sessionId || !detail) return;
+    const derivedTexts = deriveContextAnchorTextsFromRuntimeItems(
+      orderedRuntimeConversationItems(detail) as RuntimeApiItemRecord[],
+      language
+    );
+    if (!derivedTexts.length) return;
+    const createdAt = new Date().toISOString();
+    commitConversationStore((current) => updateConversationSession(current, sessionId, language, (session) => {
+      const existingAnchors = normalizeContextAnchors(session.contextAnchors || []);
+      const mergedAnchors = mergeDerivedContextAnchors(existingAnchors, derivedTexts, {
+        createId,
+        createdAt
+      });
+      const unchanged = mergedAnchors.length === existingAnchors.length
+        && mergedAnchors.every((anchor, index) => anchor.text === existingAnchors[index]?.text);
+      if (unchanged) return session;
+      return {
+        ...session,
+        updatedAt: createdAt,
+        contextAnchors: mergedAnchors
+      };
+    }));
+  }, [commitConversationStore, language]);
+
   const loadRuntimeThreadDetail = useCallback(async (threadId: string) => {
     const id = threadId.trim();
     if (!id) return null;
     const result = await desktop.getRuntimeApiThread({ threadId: id, settings });
     if (result.ok && result.detail) {
       setRuntimeThreadDetails((current) => ({ ...current, [id]: result.detail! }));
+      const store = conversationStoreRef.current;
+      const session = store.projects.flatMap((project) => project.sessions).find((candidate) => candidate.runtimeThreadId === id);
+      const sessionId = session?.id || "";
       const transcriptMessages = conversationMessagesFromRuntimeDetail(result.detail) as ChatMessage[];
-      if (transcriptMessages.length > 0) {
-        const store = conversationStoreRef.current;
-        const session = store.projects.flatMap((project) => project.sessions).find((candidate) => candidate.runtimeThreadId === id);
-        const sessionId = session?.id || "";
-        if (sessionId) {
+      if (sessionId) {
+        if (transcriptMessages.length > 0) {
           commitConversationStore((current) => updateConversationSession(current, sessionId, language, (savedSession) => ({
             ...savedSession,
             updatedAt: new Date().toISOString(),
             messages: transcriptMessages
           })));
         }
+        syncRuntimeDetailAnchors(sessionId, result.detail);
       }
     }
     return result;
-  }, [commitConversationStore, desktop, language, settings]);
+  }, [commitConversationStore, desktop, language, settings, syncRuntimeDetailAnchors]);
 
   const selectRuntimeUserInputOption = useCallback((requestId: string, questionId: string, label: string) => {
     setRuntimeUserInputDrafts((current) => ({
@@ -3456,6 +3570,9 @@ function App() {
           messages: transcriptMessages
         })));
       }
+      if (sessionId) {
+        syncRuntimeDetailAnchors(sessionId, envelope.detail);
+      }
       if (activeSessionIdRef.current === sessionId) {
         if (ACTIVE_RUNTIME_API_TURN_STATUSES.has(turnStatus as RuntimeApiTurnStatus)) {
           setStatus({ type: "running" });
@@ -3468,7 +3585,7 @@ function App() {
         }
       }
     });
-  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, mainView, renderTerminalForSession, t]);
+  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, mainView, renderTerminalForSession, syncRuntimeDetailAnchors, t]);
 
   useEffect(() => {
     const threadId = activeSession?.runtimeThreadId || "";
@@ -3783,8 +3900,8 @@ function App() {
     }
   }, [desktop, mcpSecretKey, mcpSecretTarget?.presetId, mcpSecretValue, settings, t]);
 
-  const sendPrompt = useCallback(async () => {
-    const prompt = agentPrompt.trim();
+  const sendPrompt = useCallback(async (options?: { prompt?: string; clearComposer?: boolean }) => {
+    const prompt = String(options?.prompt ?? agentPrompt).trim();
     if (!prompt) return;
     if (activeSessionBusy) return;
     let currentSession = findConversationSession(conversationStore, conversationStore.activeSessionId)
@@ -3808,13 +3925,16 @@ function App() {
       return upsertConversationSession(current, currentSession, language);
     });
     setMessages(pendingMessages);
-    setAgentPrompt("");
+    if (options?.clearComposer !== false) {
+      setAgentPrompt("");
+    }
     setStatus({ type: "launching" });
     terminalRawOutputBySessionRef.current[targetSessionId] = "";
     terminalOutputBySessionRef.current[targetSessionId] = "";
     if (activeSessionIdRef.current === targetSessionId) {
       renderTerminalForSession(targetSessionId);
     }
+    const runtimePrompt = buildAnchoredRuntimePrompt(prompt, currentSession.contextAnchors || [], language);
     const runtimeSettings = normalizeSettings({
       ...settings,
       launchAction: settings.launchAction,
@@ -3868,7 +3988,7 @@ function App() {
         conversationId: targetSessionId,
         threadId: runtimeThreadId,
         workspacePath: settings.workspacePath,
-        prompt,
+        prompt: runtimePrompt,
         model: selectedModelApiName,
         mode: permissionMode === "agent" ? "agent" : permissionMode,
         allowShell: runtimeSettings.allowShell,
@@ -3886,6 +4006,7 @@ function App() {
         updatedAt: new Date().toISOString(),
         messages: transcriptMessages.length > 0 ? transcriptMessages : session.messages
       })));
+      syncRuntimeDetailAnchors(targetSessionId, result.detail);
       if (transcriptMessages.length > 0) {
         setMessages(transcriptMessages);
       }
@@ -3893,7 +4014,42 @@ function App() {
     } catch (error) {
       setStatus({ type: "error", message: error instanceof Error ? error.message : t.status.launchFailed });
     }
-  }, [activeSessionBusy, agentPrompt, apiKey, applyConversationStore, commitConversationStore, conversationStore, desktop, language, permissionMode, processStreamEnabled, renderTerminalForSession, selectedModelApiName, settings, t]);
+  }, [activeSessionBusy, agentPrompt, apiKey, applyConversationStore, commitConversationStore, conversationStore, desktop, language, permissionMode, processStreamEnabled, renderTerminalForSession, selectedModelApiName, settings, syncRuntimeDetailAnchors, t]);
+
+  const recallArchivedContext = useCallback(async () => {
+    if (!activeRuntimeThreadDetail || activeSessionBusy) return;
+    const topic = activeRuntimeContextHealth.latestUserPrompt || agentPrompt.trim() || (language === "zh" ? "当前任务" : "current task");
+    await sendPrompt({
+      prompt: buildRecallArchivePrompt(topic, language),
+      clearComposer: false
+    });
+  }, [activeRuntimeContextHealth.latestUserPrompt, activeRuntimeThreadDetail, activeSessionBusy, agentPrompt, language, sendPrompt]);
+
+  const pinContextAnchor = useCallback(() => {
+    const sessionId = activeSession?.id;
+    const text = contextAnchorDraft.trim();
+    if (!sessionId || !text) return;
+    const nextAnchor: ContextAnchor = {
+      id: createId(),
+      text,
+      createdAt: new Date().toISOString()
+    };
+    commitConversationStore((current) => updateConversationSession(current, sessionId, language, (session) => ({
+      ...session,
+      updatedAt: new Date().toISOString(),
+      contextAnchors: normalizeContextAnchors([...(session.contextAnchors || []), nextAnchor])
+    })));
+  }, [activeSession?.id, commitConversationStore, contextAnchorDraft, language]);
+
+  const removeContextAnchor = useCallback((anchorId: string) => {
+    const sessionId = activeSession?.id;
+    if (!sessionId) return;
+    commitConversationStore((current) => updateConversationSession(current, sessionId, language, (session) => ({
+      ...session,
+      updatedAt: new Date().toISOString(),
+      contextAnchors: normalizeContextAnchors((session.contextAnchors || []).filter((anchor) => anchor.id !== anchorId))
+    })));
+  }, [activeSession?.id, commitConversationStore, language]);
 
   const handleComposerKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (!shouldSubmitComposerShortcut(event)) return;
@@ -5080,13 +5236,89 @@ function App() {
 
         <div className={`conversation-body ${mainView === "chat" ? "chat-view" : ""}`}>
           <div className={mainView === "chat" ? conversationLayoutClassName : messageListClassName}>
-            <div className={mainView === "chat" ? "message-list chat-output-list" : "view-content"}>
-            {mainView === "chat" ? (
-              activeRuntimeThreadDetail && shouldShowRuntimeConversation ? (
-                activeRuntimeThreadItems.map((item) => {
-                  const isUser = item.kind === "user_message";
-                  const isRunning = item.status === "in_progress";
-                  const requestId = runtimeItemRequestId(item);
+	            <div className={mainView === "chat" ? "message-list chat-output-list" : "view-content"}>
+	            {mainView === "chat" ? (
+	              activeRuntimeThreadDetail && shouldShowRuntimeConversation ? (
+	                <>
+	                  <section className="runtime-context-bar">
+	                    <div className="runtime-context-head">
+	                      <div>
+	                        <strong>{t.runtimeContext.title}</strong>
+	                        <p>{t.runtimeContext.recallHint}</p>
+	                      </div>
+	                      <div className="message-inline-actions">
+	                        <button
+	                          type="button"
+	                          className="secondary"
+	                          onClick={pinContextAnchor}
+	                          disabled={!contextAnchorDraft.trim()}
+	                        >
+	                          <Layers3 size={15} aria-hidden />
+	                          <span>{t.runtimeContext.pin}</span>
+	                        </button>
+	                        <button
+	                          type="button"
+	                          className="secondary"
+	                          onClick={() => void recallArchivedContext()}
+	                          disabled={activeSessionBusy || !activeRuntimeContextHealth.recallAvailable}
+	                        >
+	                          <RotateCcw size={15} aria-hidden />
+	                          <span>{t.runtimeContext.recall}</span>
+	                        </button>
+	                      </div>
+	                    </div>
+	                    <div className="runtime-anchor-list">
+	                      {activeSessionAnchors.length > 0 ? activeSessionAnchors.map((anchor) => (
+	                        <div key={anchor.id} className="runtime-anchor-chip">
+	                          <span>{anchor.text}</span>
+	                          <button type="button" onClick={() => removeContextAnchor(anchor.id)} aria-label="Remove anchor">
+	                            <X size={13} aria-hidden />
+	                          </button>
+	                        </div>
+	                      )) : (
+	                        <p className="runtime-anchor-empty">{t.runtimeContext.noAnchors}</p>
+	                      )}
+	                    </div>
+	                    <div className="runtime-context-chips">
+	                      <span className={settings.layeredContextEnabled !== false ? "status-chip enabled" : "status-chip warning"}>
+	                        {settings.layeredContextEnabled !== false ? t.runtimeContext.enabled : t.runtimeContext.disabled}
+	                      </span>
+	                      <span className="status-chip">
+	                        {t.runtimeContext.recentTurns(settings.contextVerbatimWindowTurns)}
+	                      </span>
+	                      {activeRuntimeContextHealth.latestTurnStatus ? (
+	                        <span
+	                          className={
+	                            activeRuntimeContextHealth.latestTurnStatus === "waiting_user_input"
+	                              ? "status-chip warning"
+	                              : activeRuntimeContextHealth.latestTurnStatus === "in_progress"
+	                                ? "status-chip runtime-running"
+	                                : activeRuntimeContextHealth.latestTurnStatus === "completed"
+	                                  ? "status-chip enabled"
+	                                  : "status-chip"
+	                          }
+	                        >
+	                          {runtimeContextTurnStatusLabel(activeRuntimeContextHealth.latestTurnStatus, language)}
+	                        </span>
+	                      ) : null}
+	                      {activeRuntimeContextHealth.seamCount > 0 ? (
+	                        <span className="status-chip">{t.runtimeContext.seams(activeRuntimeContextHealth.seamCount)}</span>
+	                      ) : null}
+	                      {activeRuntimeContextHealth.compactionCount > 0 ? (
+	                        <span className="status-chip warning">{t.runtimeContext.compactions(activeRuntimeContextHealth.compactionCount)}</span>
+	                      ) : null}
+	                      {activeRuntimeContextHealth.pendingApprovals > 0 ? (
+	                        <span className="status-chip warning">{t.runtimeContext.approvals(activeRuntimeContextHealth.pendingApprovals)}</span>
+	                      ) : null}
+	                      {activeRuntimeContextHealth.pendingUserInputs > 0 ? (
+	                        <span className="status-chip warning">{t.runtimeContext.questions(activeRuntimeContextHealth.pendingUserInputs)}</span>
+	                      ) : null}
+	                    </div>
+	                  </section>
+	                  {activeRuntimeThreadItems.map((item) => {
+	                  const isUser = item.kind === "user_message";
+	                  const isRunning = item.status === "in_progress";
+	                  const requestId = runtimeItemRequestId(item);
                   const requestQuestions = Array.isArray(item.metadata?.request?.questions)
                     ? item.metadata.request.questions as RuntimeApiUserInputQuestion[]
                     : [];
@@ -5095,7 +5327,7 @@ function App() {
                     ? (item.metadata.response.answers as RuntimeApiUserInputAnswer[]).map((answer) => answer.label).join(", ")
                     : "";
                   const inlineTitle = runtimeItemTitle(item);
-                  return (
+	                  return (
                     <article key={item.id} className={`message-row ${isUser ? "user" : "assistant"} ${isRunning ? "running-reply" : ""}`}>
                       <div className="message-avatar">
                         {isUser ? (
@@ -5167,9 +5399,10 @@ function App() {
                         ) : null}
                       </div>
                     </article>
-                  );
-                })
-              ) : messages.map((message) => {
+	                  );
+	                })}
+	                </>
+	              ) : messages.map((message) => {
                   const isRunningReply = message.role === "assistant" && activeSessionRunningReplyIds.has(message.id);
                   return (
                   <article key={message.id} className={`message-row ${message.role} ${isRunningReply ? "running-reply" : ""}`}>
@@ -5385,7 +5618,7 @@ function App() {
                 <Square size={18} aria-hidden />
               </button>
             ) : (
-              <button type="button" className="send-button" onClick={sendPrompt} disabled={activeSessionBusy || !agentPrompt.trim()}>
+              <button type="button" className="send-button" onClick={() => void sendPrompt()} disabled={activeSessionBusy || !agentPrompt.trim()}>
                 <Send size={18} aria-hidden />
               </button>
             )}
@@ -6185,10 +6418,34 @@ function App() {
                       spellCheck={false}
                     />
                   </label>
-                )}
-                <div className="two-col">
-                  <label className="check-row">
-                    <input
+	                )}
+	                <label className="check-row">
+	                  <input
+	                    type="checkbox"
+	                    checked={settings.layeredContextEnabled !== false}
+	                    onChange={(event) => updateSetting("layeredContextEnabled", event.target.checked)}
+	                  />
+	                  <span>{t.settings.layeredContext}</span>
+	                </label>
+	                <small className="field-hint">{t.settings.layeredContextHint}</small>
+	                <label>
+	                  {t.settings.contextVerbatimWindowTurns}
+	                  <input
+	                    type="number"
+	                    min={4}
+	                    max={64}
+	                    value={settings.contextVerbatimWindowTurns}
+	                    onChange={(event) => updateSetting(
+	                      "contextVerbatimWindowTurns",
+	                      normalizeContextVerbatimWindowTurns(Number(event.target.value))
+	                    )}
+	                    disabled={settings.layeredContextEnabled === false}
+	                  />
+	                </label>
+	                <small className="field-hint">{t.settings.contextVerbatimWindowTurnsHint}</small>
+	                <div className="two-col">
+	                  <label className="check-row">
+	                    <input
                       type="checkbox"
                       checked={settings.allowShell}
                       onChange={(event) => updateSetting("allowShell", event.target.checked)}

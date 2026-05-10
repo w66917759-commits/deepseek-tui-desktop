@@ -94,3 +94,41 @@ test("conversationMessagesFromRuntimeDetail extracts visible user and assistant 
     { id: "item_agent", role: "assistant", content: "Use Next.js." }
   ]);
 });
+
+test("summarizeRuntimeContextHealth surfaces seams, compactions, and pending inputs", () => {
+  const { summarizeRuntimeContextHealth } = loadRuntimeConversationModule();
+  const summary = summarizeRuntimeContextHealth({
+    thread: { id: "thr_demo" },
+    turns: [
+      { id: "turn_1", status: "completed", item_ids: ["item_user_1", "item_seam", "item_compact"] },
+      { id: "turn_2", status: "waiting_user_input", item_ids: ["item_user_2", "item_question", "item_approval"] }
+    ],
+    items: [
+      { id: "item_user_1", kind: "user_message", detail: "Initial request" },
+      { id: "item_seam", kind: "status", detail: "L1 seam complete (1 total, 24 messages covered)" },
+      { id: "item_compact", kind: "context_compaction", detail: "auto compact done" },
+      { id: "item_user_2", kind: "user_message", detail: "Refine the landing page" },
+      { id: "item_question", kind: "user_input_request", status: "in_progress", detail: "Choose HTML static or Next.js" },
+      { id: "item_approval", kind: "approval_request", status: "in_progress", detail: "Run npm install" }
+    ],
+    latest_seq: 9
+  }, true);
+
+  assert.equal(summary.layeredContextEnabled, true);
+  assert.equal(summary.latestTurnStatus, "waiting_user_input");
+  assert.equal(summary.latestUserPrompt, "Refine the landing page");
+  assert.equal(summary.seamCount, 1);
+  assert.equal(summary.compactionCount, 1);
+  assert.equal(summary.pendingUserInputs, 1);
+  assert.equal(summary.pendingApprovals, 1);
+  assert.equal(summary.recallAvailable, true);
+});
+
+test("buildRecallArchivePrompt asks the runtime to use archive recall for a focused topic", () => {
+  const { buildRecallArchivePrompt } = loadRuntimeConversationModule();
+  const prompt = buildRecallArchivePrompt("landing page pricing decision", "en");
+
+  assert.match(prompt, /recall_archive/);
+  assert.match(prompt, /landing page pricing decision/);
+  assert.match(prompt, /decisions, constraints, files, and failed approaches/i);
+});
