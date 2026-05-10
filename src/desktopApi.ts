@@ -236,7 +236,8 @@ let previewRuntimeApiStatus: RuntimeApiStatus = {
   },
   lastStdout: "Runtime API listening on http://127.0.0.1:7878",
   lastStderr: "",
-  pendingApprovals: []
+  pendingApprovals: [],
+  pendingUserInputs: []
 };
 
 function previewSkillName(id: string) {
@@ -512,7 +513,7 @@ function previewMcpTests(settings: DesktopSettings): McpServerTest[] {
   });
 }
 
-function createPreviewBridge(): Window["deepseekDesktop"] {
+export function createPreviewBridge(): Window["deepseekDesktop"] {
   const listeners = new Set<(data: string) => void>();
   const exits = new Set<(exit: { exitCode: number; signal?: number }) => void>();
   const runtimeSnapshots = new Set<(snapshot: RuntimeSnapshot) => void>();
@@ -520,8 +521,11 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
   const runtimeOrchestratorSnapshots = new Set<(snapshot: RuntimeOrchestratorSnapshot) => void>();
   const runtimeTurnEvents = new Set<(event: RuntimeTurnEvent) => void>();
   const runtimeApiStatuses = new Set<(status: RuntimeApiStatus) => void>();
+  const runtimeApiThreadEvents = new Set<(event: RuntimeApiThreadEventEnvelope) => void>();
   const remoteStatuses = new Set<(status: RemoteBridgeStatus) => void>();
   const desktopUpdateListeners = new Set<(update: DesktopUpdateInfo) => void>();
+  const previewThreadDetails = new Map<string, RuntimeApiThreadDetail>();
+  let previewThreadSeq = 1;
   let previewAuth: RemoteAuthState = {
     desktopId: "desktop_preview",
     loggedIn: false,
@@ -554,6 +558,38 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
     }
   });
 
+  const ensurePreviewThread = (threadId?: string, workspacePath?: string): RuntimeApiThreadDetail => {
+    const resolvedThreadId = threadId || `preview-thread-${Date.now().toString(36)}`;
+    const existing = previewThreadDetails.get(resolvedThreadId);
+    if (existing) return existing;
+    const now = new Date().toISOString();
+    const detail: RuntimeApiThreadDetail = {
+      thread: {
+        id: resolvedThreadId,
+        created_at: now,
+        updated_at: now,
+        model: previewSettings.model,
+        workspace: workspacePath || previewSettings.workspacePath,
+        mode: "agent",
+        archived: false,
+        title: "Preview Thread"
+      },
+      turns: [],
+      items: [],
+      latest_seq: 0
+    };
+    previewThreadDetails.set(resolvedThreadId, detail);
+    return detail;
+  };
+
+  const publishPreviewThreadEvent = (threadId: string, event: RuntimeApiThreadEventRecord, detail: RuntimeApiThreadDetail) => {
+    runtimeApiThreadEvents.forEach((listener) => listener({
+      threadId,
+      event,
+      detail
+    }));
+  };
+
   return {
     getSettings: async () => previewSettings,
     openExternal: async (url) => {
@@ -565,7 +601,7 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
     },
     checkDesktopUpdate: async () => ({
       ok: true,
-      currentVersion: "0.1.2",
+      currentVersion: "0.1.6",
       update: null
     }),
     saveSettings: async (settings) => {
@@ -879,6 +915,122 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
 	      publishPreviewRuntimeApiStatus(runtimeApiStatuses);
 	      return { ok: true, info: previewRuntimeApiStatus.info || undefined };
 	    },
+	    listRuntimeApiThreads: async () => ({
+	      ok: true,
+	      threads: Array.from(previewThreadDetails.values()).map((detail) => ({
+	        id: detail.thread.id,
+	        title: String(detail.thread.title || "Preview Thread"),
+	        preview: detail.items.at(-1)?.detail || detail.turns.at(-1)?.input_summary || "Preview thread",
+	        model: detail.thread.model,
+	        mode: detail.thread.mode,
+	        archived: Boolean(detail.thread.archived),
+	        updated_at: String(detail.thread.updated_at || new Date().toISOString()),
+	        latest_turn_id: detail.thread.latest_turn_id || null,
+	        latest_turn_status: detail.turns.at(-1)?.status || null
+	      }))
+	    }),
+	    createRuntimeApiThread: async (payload) => {
+	      const detail = ensurePreviewThread(undefined, payload.workspacePath);
+	      detail.thread.mode = payload.mode || detail.thread.mode;
+	      detail.thread.model = payload.model || detail.thread.model;
+	      detail.thread.workspace = payload.workspacePath || detail.thread.workspace;
+	      previewThreadDetails.set(detail.thread.id, detail);
+	      return { ok: true, thread: detail.thread };
+	    },
+	    getRuntimeApiThread: async (payload) => {
+	      const detail = ensurePreviewThread(payload.threadId);
+	      return { ok: true, detail };
+	    },
+	    startRuntimeApiThreadTurn: async (payload) => {
+	      const detail = ensurePreviewThread(payload.threadId, payload.workspacePath);
+	      const now = new Date().toISOString();
+	      const threadId = detail.thread.id;
+	      const turnId = `preview-turn-${Date.now().toString(36)}`;
+	      const userItemId = `preview-item-user-${Date.now().toString(36)}`;
+	      const assistantItemId = `preview-item-agent-${Date.now().toString(36)}`;
+	      const turn: RuntimeApiTurnRecord = {
+	        id: turnId,
+	        thread_id: threadId,
+	        status: "completed",
+	        input_summary: payload.prompt,
+	        created_at: now,
+	        started_at: now,
+	        ended_at: now,
+	        duration_ms: 1,
+	        usage: null,
+	        error: null,
+	        item_ids: [userItemId, assistantItemId],
+	        steer_count: 0
+	      };
+	      const userItem: RuntimeApiItemRecord = {
+	        id: userItemId,
+	        turn_id: turnId,
+	        kind: "user_message",
+	        status: "completed",
+	        summary: payload.prompt,
+	        detail: payload.prompt,
+	        metadata: null,
+	        artifact_refs: [],
+	        started_at: now,
+	        ended_at: now
+	      };
+	      const assistantItem: RuntimeApiItemRecord = {
+	        id: assistantItemId,
+	        turn_id: turnId,
+	        kind: "agent_message",
+	        status: "completed",
+	        summary: "Preview reply",
+	        detail: `Preview runtime reply for: ${payload.prompt}`,
+	        metadata: null,
+	        artifact_refs: [],
+	        started_at: now,
+	        ended_at: now
+	      };
+	      detail.thread.latest_turn_id = turnId;
+	      detail.thread.updated_at = now;
+	      detail.turns = [...detail.turns.filter((candidate) => candidate.id !== turnId), turn];
+	      detail.items = [...detail.items, userItem, assistantItem];
+	      detail.latest_seq = ++previewThreadSeq;
+	      previewThreadDetails.set(threadId, detail);
+	      setTimeout(() => {
+	        publishPreviewThreadEvent(threadId, {
+	          seq: detail.latest_seq,
+	          timestamp: now,
+	          thread_id: threadId,
+	          turn_id: turnId,
+	          item_id: assistantItemId,
+	          event: "turn.completed",
+	          payload: {
+	            turn,
+	            item: assistantItem
+	          }
+	        }, detail);
+	      }, 0);
+	      return { ok: true, threadId, thread: detail.thread, turn, detail };
+	    },
+	    resumeRuntimeApiThread: async (payload) => {
+	      const detail = ensurePreviewThread(payload.threadId);
+	      return { ok: true, thread: detail.thread };
+	    },
+	    forkRuntimeApiThread: async (payload) => {
+	      const source = ensurePreviewThread(payload.threadId);
+	      const forked = JSON.parse(JSON.stringify(source)) as RuntimeApiThreadDetail;
+	      forked.thread.id = `preview-thread-${Date.now().toString(36)}`;
+	      forked.thread.created_at = new Date().toISOString();
+	      forked.thread.updated_at = forked.thread.created_at;
+	      previewThreadDetails.set(forked.thread.id, forked);
+	      return { ok: true, thread: forked.thread };
+	    },
+	    archiveRuntimeApiThread: async (payload) => {
+	      const detail = ensurePreviewThread(payload.threadId);
+	      detail.thread.archived = payload.archived !== false;
+	      detail.thread.updated_at = new Date().toISOString();
+	      previewThreadDetails.set(detail.thread.id, detail);
+	      return { ok: true, thread: detail.thread };
+	    },
+	    steerRuntimeApiTurn: async () => ({ ok: true }),
+	    interruptRuntimeApiTurn: async () => ({ ok: true }),
+	    answerRuntimeApiUserInput: async () => ({ ok: true }),
 	    listRuntimeApiSkills: async (settings = previewSettings) => ({
 	      ok: true,
 	      directory: "/browser-preview/userData/skills",
@@ -1098,6 +1250,10 @@ function createPreviewBridge(): Window["deepseekDesktop"] {
 	    onRuntimeApiStatus: (callback) => {
 	      runtimeApiStatuses.add(callback);
 	      return () => runtimeApiStatuses.delete(callback);
+	    },
+	    onRuntimeApiThreadEvent: (callback) => {
+	      runtimeApiThreadEvents.add(callback);
+	      return () => runtimeApiThreadEvents.delete(callback);
 	    },
 	    onRemoteStatus: (callback) => {
       remoteStatuses.add(callback);

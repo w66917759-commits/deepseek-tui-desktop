@@ -54,6 +54,12 @@ import {
 import { getDesktopBridge } from "./desktopApi";
 import { shouldSubmitComposerShortcut } from "./composerKeys";
 import { formatProcessStreamOutput, normalizeDeepSeekThinkingMode, runtimeTurnOutputChunk } from "./processStream";
+import {
+  appendRuntimePromptMessages,
+  conversationMessagesFromRuntimeDetail,
+  orderedRuntimeConversationItems,
+  shouldRenderRuntimeConversation
+} from "./runtimeConversation";
 
 type InspectorPanel = "skills" | "remote" | "git" | "settings" | null;
 type MainView = "chat" | "tools" | "tasks" | "terminal";
@@ -160,6 +166,7 @@ const SCHEDULED_TASK_SKILL_ID = "scheduled-task-agent";
 const DEEPSEEK_V4_RELEASE_DOC_URL = "https://api-docs.deepseek.com/news/news260424";
 const DEEPSEEK_MODEL_PRICING_DOC_URL = "https://api-docs.deepseek.com/quick_start/pricing/";
 const ACTIVE_RUNTIME_TURN_STATUSES = new Set<RuntimeTurnStatus>(["queued", "running", "cancelling"]);
+const ACTIVE_RUNTIME_API_TURN_STATUSES = new Set<RuntimeApiTurnStatus>(["queued", "in_progress", "waiting_user_input"]);
 
 interface DeepSeekModelPreset {
   value: string;
@@ -2225,6 +2232,41 @@ function iconForMcp(id: string) {
   return Plug;
 }
 
+function runtimeItemRequestId(item: RuntimeApiItemRecord) {
+  return String(item.metadata?.request_id || item.metadata?.approval_id || "");
+}
+
+function runtimeItemTitle(item: RuntimeApiItemRecord) {
+  if (item.kind === "approval_request") return "Approval";
+  if (item.kind === "user_input_request") return "Question";
+  if (item.kind === "tool_call") return "Tool";
+  if (item.kind === "context_compaction") return "Compaction";
+  if (item.kind === "error") return "Error";
+  if (item.kind === "status") return "Status";
+  return "";
+}
+
+function runtimeThreadEventOutputChunk(event: RuntimeApiThreadEventRecord) {
+  if (event.event === "item.delta") {
+    return String(event.payload?.delta || "");
+  }
+  if (event.event === "item.completed" || event.event === "item.failed" || event.event === "item.interrupted") {
+    const item = event.payload?.item;
+    const kind = String(item?.kind || "");
+    if (kind === "status" || kind === "error") {
+      return `${String(item?.detail || item?.summary || "")}\n`;
+    }
+  }
+  if (event.event === "approval.required") {
+    return `${String(event.payload?.description || "Approval required")}\n`;
+  }
+  if (event.event === "user_input.required") {
+    const question = event.payload?.request?.questions?.[0]?.question;
+    return `${String(question || "User input required")}\n`;
+  }
+  return "";
+}
+
 function App() {
   const [settings, setSettings] = useState<DesktopSettings>(defaultSettings);
   const [runtime, setRuntime] = useState<RuntimeCheck | null>(null);
@@ -2237,6 +2279,8 @@ function App() {
   const [runtimeApiMcpServers, setRuntimeApiMcpServers] = useState<RuntimeApiMcpServer[]>([]);
   const [runtimeApiLoading, setRuntimeApiLoading] = useState(false);
   const [runtimeApiMessage, setRuntimeApiMessage] = useState("");
+  const [runtimeThreadDetails, setRuntimeThreadDetails] = useState<Record<string, RuntimeApiThreadDetail>>({});
+  const [runtimeUserInputDrafts, setRuntimeUserInputDrafts] = useState<Record<string, Record<string, string>>>({});
   const [remoteStatus, setRemoteStatus] = useState<RemoteBridgeStatus | null>(null);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateInfo | null>(null);
   const [running, setRunning] = useState(false);
@@ -2296,6 +2340,7 @@ function App() {
   const terminalRawOutputBySessionRef = useRef<Record<string, string>>({});
   const terminalOutputBySessionRef = useRef<Record<string, string>>({});
   const runCaptureRef = useRef<RunCapture | null>(null);
+  const conversationStoreRef = useRef<ConversationStore>({ activeSessionId: "", projects: [] });
   const desktop = useMemo(() => getDesktopBridge(), []);
   const language = settings.language;
   const t = uiCopy[language];
@@ -2317,6 +2362,18 @@ function App() {
     () => findConversationSession(conversationStore, conversationStore.activeSessionId),
     [conversationStore]
   );
+  const activeRuntimeThreadDetail = useMemo(
+    () => activeSession?.runtimeThreadId ? runtimeThreadDetails[activeSession.runtimeThreadId] || null : null,
+    [activeSession?.runtimeThreadId, runtimeThreadDetails]
+  );
+  const activeRuntimeThreadItems = useMemo(
+    () => orderedRuntimeConversationItems(activeRuntimeThreadDetail) as RuntimeApiItemRecord[],
+    [activeRuntimeThreadDetail]
+  );
+  const shouldShowRuntimeConversation = useMemo(
+    () => shouldRenderRuntimeConversation(activeRuntimeThreadDetail),
+    [activeRuntimeThreadDetail]
+  );
   const selectedWorkspacePath = activeSession?.workspacePath || settings.workspacePath;
   const selectedWorkspaceLabel = selectedWorkspacePath.trim()
     ? projectNameFromWorkspace(selectedWorkspacePath, language)
@@ -2336,9 +2393,13 @@ function App() {
     )),
     [conversationStore.activeSessionId, runtimeOrchestratorSnapshot.turns]
   );
+  const activeRuntimeApiBusy = useMemo(
+    () => activeRuntimeThreadDetail?.turns.some((turn) => ACTIVE_RUNTIME_API_TURN_STATUSES.has(turn.status)) || false,
+    [activeRuntimeThreadDetail]
+  );
   const activeSessionTerminalRunning = running
     && (!terminalRunSessionIdRef.current || terminalRunSessionIdRef.current === conversationStore.activeSessionId);
-  const activeSessionBusy = activeSessionRuntimeTurns.length > 0 || activeSessionTerminalRunning;
+  const activeSessionBusy = activeSessionRuntimeTurns.length > 0 || activeRuntimeApiBusy || activeSessionTerminalRunning;
   const activeSessionRunningReplyIds = useMemo(
     () => new Set(activeSessionRuntimeTurns.map((turn) => turn.replyMessageId).filter(Boolean)),
     [activeSessionRuntimeTurns]
@@ -2347,14 +2408,20 @@ function App() {
   const historyScrollDownLabel = language === "zh" ? "向下移动对话列表" : "Move conversation list down";
 
   const applyConversationStore = useCallback((nextStore: ConversationStore) => {
+    conversationStoreRef.current = nextStore;
     setConversationStore(nextStore);
     desktop.saveConversationHistory(nextStore).catch(() => undefined);
     return nextStore;
   }, [desktop]);
 
+  useEffect(() => {
+    conversationStoreRef.current = conversationStore;
+  }, [conversationStore]);
+
   const commitConversationStore = useCallback((updater: (current: ConversationStore) => ConversationStore) => {
     setConversationStore((current) => {
       const nextStore = updater(current);
+      conversationStoreRef.current = nextStore;
       desktop.saveConversationHistory(nextStore).catch(() => undefined);
       return nextStore;
     });
@@ -2627,6 +2694,14 @@ function App() {
       renderTerminalForSession(activeSessionIdRef.current);
     }
   }, [language, renderTerminalForSession]);
+
+  useEffect(() => {
+    if (!activeSession) return;
+    const nextMessages = activeSession.messages.length
+      ? activeSession.messages
+      : [createWelcomeMessage(language)];
+    setMessages(nextMessages);
+  }, [activeSession, language]);
 
   useEffect(() => {
     setAutomationDraft((current) => current.id || current.workspacePath ? current : {
@@ -3263,6 +3338,87 @@ function App() {
     await refreshRuntimeApi();
   }, [desktop, refreshRuntimeApi, settings, t]);
 
+  const loadRuntimeThreadDetail = useCallback(async (threadId: string) => {
+    const id = threadId.trim();
+    if (!id) return null;
+    const result = await desktop.getRuntimeApiThread({ threadId: id, settings });
+    if (result.ok && result.detail) {
+      setRuntimeThreadDetails((current) => ({ ...current, [id]: result.detail! }));
+      const transcriptMessages = conversationMessagesFromRuntimeDetail(result.detail) as ChatMessage[];
+      if (transcriptMessages.length > 0) {
+        const store = conversationStoreRef.current;
+        const session = store.projects.flatMap((project) => project.sessions).find((candidate) => candidate.runtimeThreadId === id);
+        const sessionId = session?.id || "";
+        if (sessionId) {
+          commitConversationStore((current) => updateConversationSession(current, sessionId, language, (savedSession) => ({
+            ...savedSession,
+            updatedAt: new Date().toISOString(),
+            messages: transcriptMessages
+          })));
+        }
+      }
+    }
+    return result;
+  }, [commitConversationStore, desktop, language, settings]);
+
+  const selectRuntimeUserInputOption = useCallback((requestId: string, questionId: string, label: string) => {
+    setRuntimeUserInputDrafts((current) => ({
+      ...current,
+      [requestId]: {
+        ...(current[requestId] || {}),
+        [questionId]: label
+      }
+    }));
+  }, []);
+
+  const submitRuntimeUserInput = useCallback(async (item: RuntimeApiItemRecord) => {
+    const threadId = activeSession?.runtimeThreadId || "";
+    const requestId = String(item.metadata?.request_id || "");
+    const questions = Array.isArray(item.metadata?.request?.questions) ? item.metadata.request.questions as RuntimeApiUserInputQuestion[] : [];
+    const draft = runtimeUserInputDrafts[requestId] || {};
+    if (!threadId || !requestId || questions.length === 0) return;
+    const answers = questions
+      .map((question) => {
+        const label = draft[question.id];
+        if (!label) return null;
+        return {
+          id: question.id,
+          label,
+          value: label
+        };
+      })
+      .filter(Boolean) as RuntimeApiUserInputAnswer[];
+    if (answers.length !== questions.length) {
+      setRuntimeApiMessage(language === "zh" ? "请先完成所有问题后再继续。" : "Answer all questions before continuing.");
+      return;
+    }
+    const result = await desktop.answerRuntimeApiUserInput({
+      threadId,
+      turnId: item.turn_id,
+      requestId,
+      answers,
+      settings
+    });
+    if (!result.ok) {
+      setRuntimeApiMessage(result.error || t.runtimeApi.unavailable);
+      return;
+    }
+  }, [activeSession?.runtimeThreadId, desktop, language, runtimeUserInputDrafts, settings, t.runtimeApi.unavailable]);
+
+  const decideInlineApproval = useCallback(async (item: RuntimeApiItemRecord, decision: "allow" | "deny") => {
+    const approvalId = String(item.metadata?.approval_id || "");
+    if (!approvalId) return;
+    const result = await desktop.decideRuntimeApiApproval({
+      approvalId,
+      decision,
+      remember: false,
+      settings
+    });
+    if (!result.ok) {
+      setRuntimeApiMessage(result.error || t.runtimeApi.unavailable);
+    }
+  }, [desktop, settings, t.runtimeApi.unavailable]);
+
   useEffect(() => {
     return desktop.onRuntimeApiStatus((nextStatus) => {
       setRuntimeApiStatus(nextStatus);
@@ -3271,6 +3427,54 @@ function App() {
       }
     });
   }, [desktop]);
+
+  useEffect(() => {
+    return desktop.onRuntimeApiThreadEvent((envelope) => {
+      const threadId = envelope.threadId || envelope.detail?.thread?.id || envelope.event?.thread_id || "";
+      if (!threadId || !envelope.detail) return;
+      setRuntimeThreadDetails((current) => ({ ...current, [threadId]: envelope.detail }));
+      const store = conversationStoreRef.current;
+      const session = store.projects.flatMap((project) => project.sessions).find((candidate) => candidate.runtimeThreadId === threadId);
+      const sessionId = session?.id || "";
+      const chunk = envelope.event ? runtimeThreadEventOutputChunk(envelope.event) : "";
+      if (sessionId && chunk) {
+        appendProcessStreamForSession(sessionId, chunk);
+        if (activeSessionIdRef.current === sessionId) {
+          if (mainView === "terminal") {
+            terminalRef.current?.write(chunk);
+          } else {
+            renderTerminalForSession(sessionId);
+          }
+        }
+      }
+      const turnStatus = envelope.detail.turns.at(-1)?.status || "";
+      const transcriptMessages = conversationMessagesFromRuntimeDetail(envelope.detail) as ChatMessage[];
+      if (sessionId && transcriptMessages.length > 0) {
+        commitConversationStore((current) => updateConversationSession(current, sessionId, language, (savedSession) => ({
+          ...savedSession,
+          updatedAt: new Date().toISOString(),
+          messages: transcriptMessages
+        })));
+      }
+      if (activeSessionIdRef.current === sessionId) {
+        if (ACTIVE_RUNTIME_API_TURN_STATUSES.has(turnStatus as RuntimeApiTurnStatus)) {
+          setStatus({ type: "running" });
+        } else if (turnStatus === "completed") {
+          setStatus({ type: "exited", exitCode: 0 });
+        } else if (turnStatus === "failed") {
+          setStatus({ type: "error", message: String(envelope.detail.turns.at(-1)?.error || t.runSummary.failedShort) });
+        } else if (turnStatus === "interrupted" || turnStatus === "canceled") {
+          setStatus({ type: "stopped" });
+        }
+      }
+    });
+  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, mainView, renderTerminalForSession, t]);
+
+  useEffect(() => {
+    const threadId = activeSession?.runtimeThreadId || "";
+    if (!threadId) return;
+    void loadRuntimeThreadDetail(threadId);
+  }, [activeSession?.runtimeThreadId, loadRuntimeThreadDetail]);
 
   useEffect(() => {
     if (mainView !== "tools" && inspectorPanel !== "settings") return;
@@ -3583,46 +3787,27 @@ function App() {
     const prompt = agentPrompt.trim();
     if (!prompt) return;
     if (activeSessionBusy) return;
-    const currentSession = findConversationSession(conversationStore, conversationStore.activeSessionId)
+    let currentSession = findConversationSession(conversationStore, conversationStore.activeSessionId)
       || createConversationSession(settings.workspacePath, language, [createWelcomeMessage(language)]);
+    if (!findConversationSession(conversationStore, currentSession.id)) {
+      applyConversationStore(upsertConversationSession(conversationStore, currentSession, language));
+    }
     const targetSessionId = currentSession.id;
-
-    const permissionContent = permissionMode === "plan"
-      ? t.promptResult.planContent
-      : permissionMode === "yolo"
-        ? t.promptResult.yoloContent
-        : t.promptResult.execContent;
-    const assistantTitle = permissionMode === "plan"
-      ? t.promptResult.planTitle
-      : permissionMode === "yolo"
-        ? t.promptResult.yoloTitle
-        : t.promptResult.harnessTitle;
-    const assistantContent = permissionContent;
-    const launchAction: LaunchAction = permissionMode === "plan" ? "plan" : permissionMode === "yolo" ? "yolo" : "exec";
-    const replyMessageId = createId();
-
-    const nextMessages: ChatMessage[] = [
-      ...messages,
-      { id: createId(), role: "user", content: prompt },
-      {
-        id: replyMessageId,
-        role: "assistant",
-        title: assistantTitle,
-        content: assistantContent
-      }
-    ];
-    setMessages(nextMessages);
+    let pendingMessages: ChatMessage[] = currentSession.messages;
     commitConversationStore((current) => {
       const session = findConversationSession(current, targetSessionId) || currentSession;
       const isUntitled = !session.title || session.title === uiCopy[language].history.untitled;
-      return upsertConversationSession(current, {
+      pendingMessages = appendRuntimePromptMessages(session.messages, prompt, language, createId) as ChatMessage[];
+      currentSession = {
         ...session,
         workspacePath: settings.workspacePath,
         title: isUntitled ? titleFromPrompt(prompt, uiCopy[language].history.untitled) : session.title,
         updatedAt: new Date().toISOString(),
-        messages: nextMessages
-      }, language);
+        messages: pendingMessages
+      };
+      return upsertConversationSession(current, currentSession, language);
     });
+    setMessages(pendingMessages);
     setAgentPrompt("");
     setStatus({ type: "launching" });
     terminalRawOutputBySessionRef.current[targetSessionId] = "";
@@ -3632,7 +3817,7 @@ function App() {
     }
     const runtimeSettings = normalizeSettings({
       ...settings,
-      launchAction,
+      launchAction: settings.launchAction,
       processStreamEnabled,
       model: selectedModelApiName
     });
@@ -3643,54 +3828,72 @@ function App() {
     if (launchApiKey) {
       const keyResult = await desktop.saveApiKey({ provider: runtimeSettings.provider, apiKey: launchApiKey });
       if (!keyResult.ok) {
-        const message: ChatMessage = {
-          id: replyMessageId,
-          role: "assistant",
-          title: t.runSummary.title,
-          content: keyResult.error || t.settings.apiKeySaveFailed
-        };
-        commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
-          ...session,
-          updatedAt: new Date().toISOString(),
-          messages: session.messages.map((candidate) => candidate.id === replyMessageId ? message : candidate)
-        })));
-        setMessages((current) => current.map((candidate) => candidate.id === replyMessageId ? message : candidate));
         setStatus({ type: "error", message: keyResult.error || t.settings.apiKeySaveFailed });
         return;
       }
     }
-    const result = await desktop.startRuntimeTurn({
-      conversationId: targetSessionId,
-      workspacePath: settings.workspacePath,
-      prompt,
-      model: selectedModelApiName,
-      replyMessageId,
-      mode: launchAction,
-      settings: runtimeSettings
-    });
-    if (result.runtime) {
-      setRuntime(result.runtime);
-    }
-    if (result.snapshot) {
-      setRuntimeOrchestratorSnapshot(result.snapshot);
-    }
-    if (result && !result.ok) {
-      const message: ChatMessage = {
-        id: replyMessageId,
-        role: "assistant",
-        title: t.runSummary.title,
-        content: result.error || t.status.launchFailed
-      };
+    try {
+      let runtimeThreadId = currentSession.runtimeThreadId || "";
+      if (!runtimeThreadId) {
+        const created = await desktop.createRuntimeApiThread({
+          workspacePath: settings.workspacePath,
+          model: selectedModelApiName,
+          mode: permissionMode === "agent" ? "agent" : permissionMode,
+          allowShell: runtimeSettings.allowShell,
+          settings: runtimeSettings
+        });
+        if (!created.ok || !created.thread?.id) {
+          setStatus({ type: "error", message: created.error || t.status.launchFailed });
+          return;
+        }
+        runtimeThreadId = created.thread.id;
+        setRuntimeThreadDetails((current) => current[runtimeThreadId]
+          ? current
+          : {
+            ...current,
+            [runtimeThreadId]: {
+              thread: created.thread!,
+              turns: [],
+              items: [],
+              latest_seq: 0
+            }
+          });
+        commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
+          ...session,
+          runtimeThreadId,
+          updatedAt: new Date().toISOString()
+        })));
+      }
+      const result = await desktop.startRuntimeApiThreadTurn({
+        conversationId: targetSessionId,
+        threadId: runtimeThreadId,
+        workspacePath: settings.workspacePath,
+        prompt,
+        model: selectedModelApiName,
+        mode: permissionMode === "agent" ? "agent" : permissionMode,
+        allowShell: runtimeSettings.allowShell,
+        settings: runtimeSettings
+      });
+      if (!result.ok || !result.threadId || !result.detail) {
+        setStatus({ type: "error", message: result.error || t.status.launchFailed });
+        return;
+      }
+      const transcriptMessages = conversationMessagesFromRuntimeDetail(result.detail) as ChatMessage[];
+      setRuntimeThreadDetails((current) => ({ ...current, [result.threadId!]: result.detail! }));
       commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
         ...session,
+        runtimeThreadId: result.threadId,
         updatedAt: new Date().toISOString(),
-        messages: session.messages.map((candidate) => candidate.id === replyMessageId ? message : candidate)
+        messages: transcriptMessages.length > 0 ? transcriptMessages : session.messages
       })));
-      setMessages((current) => current.map((candidate) => candidate.id === replyMessageId ? message : candidate));
-      setStatus({ type: "error", message: result.error || t.status.launchFailed });
-      return;
+      if (transcriptMessages.length > 0) {
+        setMessages(transcriptMessages);
+      }
+      setStatus({ type: "running" });
+    } catch (error) {
+      setStatus({ type: "error", message: error instanceof Error ? error.message : t.status.launchFailed });
     }
-  }, [activeSessionBusy, agentPrompt, apiKey, commitConversationStore, conversationStore, desktop, language, messages, permissionMode, processStreamEnabled, renderTerminalForSession, selectedModelApiName, settings, t]);
+  }, [activeSessionBusy, agentPrompt, apiKey, applyConversationStore, commitConversationStore, conversationStore, desktop, language, permissionMode, processStreamEnabled, renderTerminalForSession, selectedModelApiName, settings, t]);
 
   const handleComposerKeyDown = useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (!shouldSubmitComposerShortcut(event)) return;
@@ -4007,6 +4210,7 @@ function App() {
   const runtimeApiStateText = t.runtimeApi[runtimeApiState];
   const runtimeApiUrl = runtimeApiStatus?.url || (runtimeApiInfo?.port ? `http://127.0.0.1:${runtimeApiInfo.port}` : "");
   const runtimeApiPendingApprovals = runtimeApiStatus?.pendingApprovals || [];
+  const runtimeApiPendingUserInputs = runtimeApiStatus?.pendingUserInputs || [];
   const runtimeApiPanel = (
     <section className={runtimeApiStatus?.connected ? "runtime-api-panel connected" : "runtime-api-panel"}>
       <div className="tool-section-head runtime-api-head">
@@ -4062,7 +4266,8 @@ function App() {
                 >
                   <span>
                     <strong>{skill.name || skill.id}</strong>
-                    <small>{skill.description || skill.path || ""}</small>
+                    <small>{skill.runtimeState?.state || (skill.enabled ? "enabled" : "disabled")}</small>
+                    <small>{skill.runtimeState?.reason || skill.description || skill.path || ""}</small>
                   </span>
                   <span className={skill.enabled ? "switch on" : "switch"} />
                 </button>
@@ -4084,7 +4289,8 @@ function App() {
                 <div key={server.id || server.name} className={server.enabled ? "runtime-api-row enabled" : "runtime-api-row"}>
                   <span>
                     <strong>{server.name || server.id}</strong>
-                    <small>{server.status || server.command || server.url || ""}</small>
+                    <small>{server.runtimeState?.state || server.status || "disabled"}</small>
+                    <small>{server.runtimeState?.reason || server.status || server.command || server.url || ""}</small>
                   </span>
                   {server.enabled ? <CheckCircle2 size={15} aria-hidden /> : <CircleAlert size={15} aria-hidden />}
                 </div>
@@ -4097,6 +4303,9 @@ function App() {
       </div>
       <div className="runtime-api-approvals">
         <strong>{t.runtimeApi.approvals}</strong>
+        {runtimeApiPendingUserInputs.length > 0 ? (
+          <span>{language === "zh" ? `待回答问题 ${runtimeApiPendingUserInputs.length}` : `${runtimeApiPendingUserInputs.length} question(s) waiting`}</span>
+        ) : null}
         {runtimeApiPendingApprovals.length > 0 ? (
           runtimeApiPendingApprovals.map((approval) => (
             <div key={approval.id || approval.approvalId || approval.title} className="runtime-api-approval-row">
@@ -4872,27 +5081,116 @@ function App() {
         <div className={`conversation-body ${mainView === "chat" ? "chat-view" : ""}`}>
           <div className={mainView === "chat" ? conversationLayoutClassName : messageListClassName}>
             <div className={mainView === "chat" ? "message-list chat-output-list" : "view-content"}>
-            {mainView === "chat" ? messages.map((message) => {
-                const isRunningReply = message.role === "assistant" && activeSessionRunningReplyIds.has(message.id);
-                return (
-                <article key={message.id} className={`message-row ${message.role} ${isRunningReply ? "running-reply" : ""}`}>
-                  <div className="message-avatar">
-                    {message.role === "assistant"
-                      ? isRunningReply ? <RunningActivityMark /> : <Bot size={16} aria-hidden />
-                      : <Code2 size={16} aria-hidden />}
-                  </div>
-                  <div className="message-bubble">
-                    {message.title ? <strong>{message.title}</strong> : null}
-                    {isRunningReply ? (
-                      <span className="running-label">
-                        {t.sidebar.running}
-                      </span>
-                    ) : null}
-                    <p>{message.content}</p>
-                  </div>
-                </article>
-                );
-              }) : null}
+            {mainView === "chat" ? (
+              activeRuntimeThreadDetail && shouldShowRuntimeConversation ? (
+                activeRuntimeThreadItems.map((item) => {
+                  const isUser = item.kind === "user_message";
+                  const isRunning = item.status === "in_progress";
+                  const requestId = runtimeItemRequestId(item);
+                  const requestQuestions = Array.isArray(item.metadata?.request?.questions)
+                    ? item.metadata.request.questions as RuntimeApiUserInputQuestion[]
+                    : [];
+                  const selectedAnswers = runtimeUserInputDrafts[requestId] || {};
+                  const answeredSummary = Array.isArray(item.metadata?.response?.answers)
+                    ? (item.metadata.response.answers as RuntimeApiUserInputAnswer[]).map((answer) => answer.label).join(", ")
+                    : "";
+                  const inlineTitle = runtimeItemTitle(item);
+                  return (
+                    <article key={item.id} className={`message-row ${isUser ? "user" : "assistant"} ${isRunning ? "running-reply" : ""}`}>
+                      <div className="message-avatar">
+                        {isUser ? (
+                          <Code2 size={16} aria-hidden />
+                        ) : item.kind === "approval_request" ? (
+                          <ShieldCheck size={16} aria-hidden />
+                        ) : item.kind === "user_input_request" ? (
+                          <MessageSquare size={16} aria-hidden />
+                        ) : item.kind === "tool_call" ? (
+                          <TerminalSquare size={16} aria-hidden />
+                        ) : item.kind === "error" ? (
+                          <CircleAlert size={16} aria-hidden />
+                        ) : isRunning ? (
+                          <RunningActivityMark />
+                        ) : (
+                          <Bot size={16} aria-hidden />
+                        )}
+                      </div>
+                      <div className={`message-bubble runtime-item-bubble runtime-item-${item.kind}`}>
+                        {inlineTitle ? <strong>{inlineTitle}</strong> : null}
+                        {isRunning ? <span className="running-label">{t.sidebar.running}</span> : null}
+                        {item.detail || item.summary ? <p>{item.detail || item.summary}</p> : null}
+                        {item.kind === "approval_request" && item.status === "in_progress" ? (
+                          <div className="message-inline-actions">
+                            <button type="button" className="secondary" onClick={() => void decideInlineApproval(item, "allow")}>
+                              {language === "zh" ? "批准" : "Allow"}
+                            </button>
+                            <button type="button" className="secondary" onClick={() => void decideInlineApproval(item, "deny")}>
+                              {language === "zh" ? "拒绝" : "Deny"}
+                            </button>
+                          </div>
+                        ) : null}
+                        {item.kind === "user_input_request" ? (
+                          <div className="runtime-question-list">
+                            {requestQuestions.map((question) => (
+                              <div key={question.id} className="runtime-question-block">
+                                <span className="runtime-question-header">{question.header}</span>
+                                <p>{question.question}</p>
+                                <div className="message-inline-actions">
+                                  {question.options.map((option) => {
+                                    const active = selectedAnswers[question.id] === option.label;
+                                    return (
+                                      <button
+                                        key={option.label}
+                                        type="button"
+                                        className={active ? "secondary active-chip" : "secondary"}
+                                        onClick={() => selectRuntimeUserInputOption(requestId, question.id, option.label)}
+                                        disabled={item.status === "completed"}
+                                      >
+                                        {option.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ))}
+                            {item.status !== "completed" ? (
+                              <div className="message-inline-actions">
+                                <button type="button" className="secondary" onClick={() => void submitRuntimeUserInput(item)}>
+                                  {language === "zh" ? "继续执行" : "Continue"}
+                                </button>
+                              </div>
+                            ) : answeredSummary ? (
+                              <p className="runtime-answer-summary">
+                                {language === "zh" ? `已选择：${answeredSummary}` : `Selected: ${answeredSummary}`}
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })
+              ) : messages.map((message) => {
+                  const isRunningReply = message.role === "assistant" && activeSessionRunningReplyIds.has(message.id);
+                  return (
+                  <article key={message.id} className={`message-row ${message.role} ${isRunningReply ? "running-reply" : ""}`}>
+                    <div className="message-avatar">
+                      {message.role === "assistant"
+                        ? isRunningReply ? <RunningActivityMark /> : <Bot size={16} aria-hidden />
+                        : <Code2 size={16} aria-hidden />}
+                    </div>
+                    <div className="message-bubble">
+                      {message.title ? <strong>{message.title}</strong> : null}
+                      {isRunningReply ? (
+                        <span className="running-label">
+                          {t.sidebar.running}
+                        </span>
+                      ) : null}
+                      <p>{message.content}</p>
+                    </div>
+                  </article>
+                  );
+                })
+            ) : null}
 
             {mainView === "tools" ? (
               <section className="tool-dashboard">

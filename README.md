@@ -59,6 +59,8 @@ npm run dev
 
 `npm install` triggers the `deepseek-tui` postinstall script which downloads the platform `deepseek` binary into `node_modules/deepseek-tui/bin/downloads/`. The desktop app defaults to this bundled runtime but can also use a system or custom binary.
 
+If you are actively modifying the sibling upstream checkout at `/Users/west/project/DeepSeek-TUI`, run `npm run runtime:sync-local` after rebuilding upstream. That command rebuilds the local Rust binaries and replaces the bundled `deepseek` / `deepseek-tui` pair in `node_modules/deepseek-tui/bin/downloads/`, so the desktop shell exercises the same Runtime HTTP/SSE protocol you just changed upstream.
+
 Open the app, paste your DeepSeek API key, choose a workspace, and start chatting.
 
 ## Features

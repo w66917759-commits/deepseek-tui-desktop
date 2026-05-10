@@ -872,6 +872,56 @@ label {
   white-space: pre-wrap;
 }
 
+.runtime-item-bubble {
+  gap: 8px;
+}
+
+.runtime-item-bubble.runtime-item-user_input_request,
+.runtime-item-bubble.runtime-item-approval_request,
+.runtime-item-bubble.runtime-item-tool_call,
+.runtime-item-bubble.runtime-item-status,
+.runtime-item-bubble.runtime-item-error,
+.runtime-item-bubble.runtime-item-context_compaction {
+  max-width: min(760px, 86%);
+}
+
+.message-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-question-list {
+  display: grid;
+  gap: 10px;
+}
+
+.runtime-question-block {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e6e9ed;
+}
+
+.runtime-question-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: #344054;
+}
+
+.active-chip {
+  background: #e8f2ff;
+  border-color: #9ec5ff;
+  color: #0b63ce;
+}
+
+.runtime-answer-summary {
+  font-size: 13px;
+  color: #0e8f6e;
+}
+
 .terminal-card {
   display: grid;
   grid-template-rows: auto 300px;

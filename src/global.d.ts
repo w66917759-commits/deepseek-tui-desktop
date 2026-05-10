@@ -32,6 +32,16 @@ declare global {
 	      cancelRuntimeTurn: (payload: RuntimeTurnCancelPayload) => Promise<RuntimeTurnCancelResult>;
 	      getRuntimeApiStatus: (settings?: DesktopSettings) => Promise<RuntimeApiStatus>;
 	      getRuntimeApiInfo: (settings?: DesktopSettings) => Promise<RuntimeApiInfoResult>;
+	      listRuntimeApiThreads: (settings?: DesktopSettings) => Promise<RuntimeApiThreadsResult>;
+	      createRuntimeApiThread: (payload: RuntimeApiThreadCreatePayload) => Promise<RuntimeApiThreadActionResult>;
+	      getRuntimeApiThread: (payload: RuntimeApiThreadLookupPayload) => Promise<RuntimeApiThreadDetailResult>;
+	      startRuntimeApiThreadTurn: (payload: RuntimeApiThreadTurnStartPayload) => Promise<RuntimeApiThreadTurnResult>;
+	      resumeRuntimeApiThread: (payload: RuntimeApiThreadLookupPayload) => Promise<RuntimeApiThreadActionResult>;
+	      forkRuntimeApiThread: (payload: RuntimeApiThreadLookupPayload) => Promise<RuntimeApiThreadActionResult>;
+	      archiveRuntimeApiThread: (payload: RuntimeApiThreadArchivePayload) => Promise<RuntimeApiThreadActionResult>;
+	      steerRuntimeApiTurn: (payload: RuntimeApiThreadSteerPayload) => Promise<RuntimeApiThreadActionResult>;
+	      interruptRuntimeApiTurn: (payload: RuntimeApiThreadTurnLookupPayload) => Promise<RuntimeApiThreadActionResult>;
+	      answerRuntimeApiUserInput: (payload: RuntimeApiUserInputAnswerPayload) => Promise<RuntimeApiActionResult>;
 	      listRuntimeApiSkills: (settings?: DesktopSettings) => Promise<RuntimeApiSkillsResult>;
 	      setRuntimeApiSkillEnabled: (payload: RuntimeApiSkillTogglePayload) => Promise<RuntimeApiSkillActionResult>;
 	      listRuntimeApiMcpServers: (settings?: DesktopSettings) => Promise<RuntimeApiMcpServersResult>;
@@ -64,6 +74,7 @@ declare global {
 	      onRuntimeOrchestratorSnapshot: (callback: (snapshot: RuntimeOrchestratorSnapshot) => void) => () => void;
 	      onRuntimeTurnEvent: (callback: (event: RuntimeTurnEvent) => void) => () => void;
 	      onRuntimeApiStatus: (callback: (status: RuntimeApiStatus) => void) => () => void;
+	      onRuntimeApiThreadEvent: (callback: (event: RuntimeApiThreadEventEnvelope) => void) => () => void;
 	      onRemoteStatus: (callback: (status: RemoteBridgeStatus) => void) => () => void;
 	      onDesktopUpdateAvailable: (callback: (update: DesktopUpdateInfo) => void) => () => void;
 	    };
@@ -432,6 +443,7 @@ declare global {
 	    turnId?: string;
 	    conversationId?: string;
 	    threadId?: string;
+	    detail?: RuntimeApiThreadDetail;
 	    snapshot?: RuntimeOrchestratorSnapshot;
 	    error?: string;
 	    runtime?: RuntimeCheck;
@@ -523,9 +535,23 @@ declare global {
 	  interface RuntimeApiApproval {
 	    id?: string;
 	    approvalId?: string;
+	    threadId?: string;
+	    turnId?: string;
+	    toolName?: string;
 	    title?: string;
 	    message?: string;
 	    action?: string;
+	    [key: string]: unknown;
+	  }
+
+	  interface RuntimeApiPendingUserInput {
+	    id?: string;
+	    requestId?: string;
+	    threadId?: string;
+	    turnId?: string;
+	    title?: string;
+	    message?: string;
+	    questions?: RuntimeApiUserInputQuestion[];
 	    [key: string]: unknown;
 	  }
 
@@ -544,6 +570,7 @@ declare global {
 	    lastStdout: string;
 	    lastStderr: string;
 	    pendingApprovals: RuntimeApiApproval[];
+	    pendingUserInputs: RuntimeApiPendingUserInput[];
 	  }
 
 	  interface RuntimeApiInfoResult {
@@ -552,12 +579,25 @@ declare global {
 	    error?: string;
 	  }
 
+	  interface RuntimeCapabilityState {
+	    selected: boolean;
+	    enabled: boolean;
+	    injected: boolean;
+	    loaded: boolean;
+	    callable: boolean;
+	    approvalBlocked: boolean;
+	    failed: boolean;
+	    state: "disabled" | "selected" | "enabled" | "injected" | "loaded" | "callable" | "approval_blocked" | "failed";
+	    reason: string;
+	  }
+
 	  interface RuntimeApiSkill {
 	    id: string;
 	    name: string;
 	    enabled: boolean;
 	    description?: string;
 	    path?: string;
+	    runtimeState?: RuntimeCapabilityState;
 	    [key: string]: unknown;
 	  }
 
@@ -589,6 +629,9 @@ declare global {
 	    status?: string;
 	    command?: string;
 	    url?: string;
+	    connected?: boolean;
+	    error?: string;
+	    runtimeState?: RuntimeCapabilityState;
 	    [key: string]: unknown;
 	  }
 
@@ -610,6 +653,206 @@ declare global {
 	    ok: boolean;
 	    error?: string;
 	    result?: unknown;
+	  }
+
+	  type RuntimeApiTurnStatus =
+	    | "queued"
+	    | "in_progress"
+	    | "waiting_user_input"
+	    | "completed"
+	    | "failed"
+	    | "interrupted"
+	    | "canceled";
+
+	  type RuntimeApiItemStatus =
+	    | "queued"
+	    | "in_progress"
+	    | "completed"
+	    | "failed"
+	    | "interrupted"
+	    | "canceled";
+
+	  type RuntimeApiItemKind =
+	    | "user_message"
+	    | "agent_message"
+	    | "agent_reasoning"
+	    | "tool_call"
+	    | "approval_request"
+	    | "user_input_request"
+	    | "file_change"
+	    | "command_execution"
+	    | "context_compaction"
+	    | "status"
+	    | "error";
+
+	  interface RuntimeApiThreadSummary {
+	    id: string;
+	    title: string;
+	    preview: string;
+	    model: string;
+	    mode: string;
+	    archived: boolean;
+	    updated_at: string;
+	    latest_turn_id?: string | null;
+	    latest_turn_status?: string | null;
+	  }
+
+	  interface RuntimeApiThreadRecord {
+	    id: string;
+	    created_at?: string;
+	    updated_at?: string;
+	    model: string;
+	    workspace?: string;
+	    mode: string;
+	    allow_shell?: boolean;
+	    trust_mode?: boolean;
+	    auto_approve?: boolean;
+	    latest_turn_id?: string | null;
+	    latest_response_bookmark?: string | null;
+	    archived?: boolean;
+	    system_prompt?: string | null;
+	    task_id?: string | null;
+	    title?: string | null;
+	    [key: string]: unknown;
+	  }
+
+	  interface RuntimeApiTurnRecord {
+	    id: string;
+	    thread_id: string;
+	    status: RuntimeApiTurnStatus;
+	    input_summary: string;
+	    created_at?: string;
+	    started_at?: string | null;
+	    ended_at?: string | null;
+	    duration_ms?: number | null;
+	    usage?: Record<string, unknown> | null;
+	    error?: string | null;
+	    item_ids: string[];
+	    steer_count?: number;
+	    [key: string]: unknown;
+	  }
+
+	  interface RuntimeApiItemRecord {
+	    id: string;
+	    turn_id: string;
+	    kind: RuntimeApiItemKind;
+	    status: RuntimeApiItemStatus;
+	    summary: string;
+	    detail?: string | null;
+	    metadata?: Record<string, any> | null;
+	    artifact_refs?: string[];
+	    started_at?: string | null;
+	    ended_at?: string | null;
+	    [key: string]: unknown;
+	  }
+
+	  interface RuntimeApiThreadDetail {
+	    thread: RuntimeApiThreadRecord;
+	    turns: RuntimeApiTurnRecord[];
+	    items: RuntimeApiItemRecord[];
+	    latest_seq: number;
+	  }
+
+	  interface RuntimeApiThreadEventRecord {
+	    seq: number;
+	    timestamp: string;
+	    thread_id: string;
+	    turn_id?: string | null;
+	    item_id?: string | null;
+	    event: string;
+	    payload: Record<string, any>;
+	  }
+
+	  interface RuntimeApiThreadEventEnvelope {
+	    threadId: string;
+	    detail: RuntimeApiThreadDetail;
+	    event: RuntimeApiThreadEventRecord;
+	  }
+
+	  interface RuntimeApiThreadsResult {
+	    ok: boolean;
+	    threads: RuntimeApiThreadSummary[];
+	    error?: string;
+	  }
+
+	  interface RuntimeApiThreadLookupPayload {
+	    threadId: string;
+	    settings?: DesktopSettings;
+	  }
+
+	  interface RuntimeApiThreadCreatePayload {
+	    workspacePath?: string;
+	    model?: string;
+	    mode?: string;
+	    allowShell?: boolean;
+	    trustMode?: boolean;
+	    autoApprove?: boolean;
+	    archived?: boolean;
+	    settings?: DesktopSettings;
+	  }
+
+	  interface RuntimeApiThreadArchivePayload extends RuntimeApiThreadLookupPayload {
+	    archived?: boolean;
+	  }
+
+	  interface RuntimeApiThreadTurnLookupPayload extends RuntimeApiThreadLookupPayload {
+	    turnId: string;
+	  }
+
+	  interface RuntimeApiThreadTurnStartPayload extends RuntimeApiThreadCreatePayload {
+	    threadId?: string;
+	    conversationId?: string;
+	    prompt: string;
+	  }
+
+	  interface RuntimeApiThreadSteerPayload extends RuntimeApiThreadTurnLookupPayload {
+	    prompt: string;
+	  }
+
+	  interface RuntimeApiThreadActionResult {
+	    ok: boolean;
+	    thread?: RuntimeApiThreadRecord;
+	    turn?: RuntimeApiTurnRecord;
+	    error?: string;
+	    result?: unknown;
+	  }
+
+	  interface RuntimeApiThreadDetailResult {
+	    ok: boolean;
+	    detail?: RuntimeApiThreadDetail;
+	    error?: string;
+	  }
+
+	  interface RuntimeApiThreadTurnResult {
+	    ok: boolean;
+	    threadId?: string;
+	    thread?: RuntimeApiThreadRecord;
+	    turn?: RuntimeApiTurnRecord;
+	    detail?: RuntimeApiThreadDetail;
+	    error?: string;
+	  }
+
+	  interface RuntimeApiUserInputOption {
+	    label: string;
+	    description: string;
+	  }
+
+	  interface RuntimeApiUserInputQuestion {
+	    header: string;
+	    id: string;
+	    question: string;
+	    options: RuntimeApiUserInputOption[];
+	  }
+
+	  interface RuntimeApiUserInputAnswer {
+	    id: string;
+	    label: string;
+	    value: string;
+	  }
+
+	  interface RuntimeApiUserInputAnswerPayload extends RuntimeApiThreadTurnLookupPayload {
+	    requestId: string;
+	    answers: RuntimeApiUserInputAnswer[];
 	  }
 
   interface GitRemoteInfo {

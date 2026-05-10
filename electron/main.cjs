@@ -172,6 +172,12 @@ function sendRuntimeApiStatus(status) {
   }
 }
 
+function sendRuntimeApiThreadEvent(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("runtimeApi:threadEvent", event);
+  }
+}
+
 function sendRemoteStatus() {
   if (remoteBridge && mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("remote:status", remoteBridge.getStatus(true));
@@ -521,20 +527,45 @@ function registerIpc() {
 
   ipcMain.handle("runtime:orchestratorSnapshot", () => getOrchestrator().snapshot());
 
-  ipcMain.handle("runtime:startTurn", (_event, payload = {}) => {
+  ipcMain.handle("runtime:startTurn", async (_event, payload = {}) => {
     const runtime = harness.checkRuntime(payload.settings || harness.readSettings());
     if (!runtime.selectedExists) {
       return { ok: false, error: "Runtime not found", runtime };
     }
-    const orchestrator = getOrchestrator();
-    return orchestrator.startTurn(payload);
+    const result = await runtimeApiService.startRuntimeTurn(payload);
+    return { ...result, runtime };
   });
 
-  ipcMain.handle("runtime:cancelTurn", (_event, payload = {}) => getOrchestrator().cancelTurn(payload));
+  ipcMain.handle("runtime:cancelTurn", async (_event, payload = {}) => {
+    if (payload?.threadId && payload?.turnId) {
+      return runtimeApiService.interruptTurn(payload);
+    }
+    return getOrchestrator().cancelTurn(payload);
+  });
 
   ipcMain.handle("runtimeApi:getStatus", (_event, settings) => runtimeApiService.getStatus(settings));
 
   ipcMain.handle("runtimeApi:getInfo", (_event, settings) => runtimeApiService.getInfo(settings));
+
+  ipcMain.handle("runtimeApi:listThreads", (_event, settings) => runtimeApiService.listThreads(settings));
+
+  ipcMain.handle("runtimeApi:createThread", (_event, payload) => runtimeApiService.createThread(payload));
+
+  ipcMain.handle("runtimeApi:getThread", (_event, payload) => runtimeApiService.getThreadDetail(payload));
+
+  ipcMain.handle("runtimeApi:startThreadTurn", (_event, payload) => runtimeApiService.startThreadTurn(payload));
+
+  ipcMain.handle("runtimeApi:resumeThread", (_event, payload) => runtimeApiService.resumeThread(payload));
+
+  ipcMain.handle("runtimeApi:forkThread", (_event, payload) => runtimeApiService.forkThread(payload));
+
+  ipcMain.handle("runtimeApi:archiveThread", (_event, payload) => runtimeApiService.archiveThread(payload));
+
+  ipcMain.handle("runtimeApi:steerTurn", (_event, payload) => runtimeApiService.steerTurn(payload));
+
+  ipcMain.handle("runtimeApi:interruptTurn", (_event, payload) => runtimeApiService.interruptTurn(payload));
+
+  ipcMain.handle("runtimeApi:answerUserInput", (_event, payload) => runtimeApiService.answerUserInput(payload));
 
   ipcMain.handle("runtimeApi:listSkills", (_event, settings) => runtimeApiService.listSkills(settings));
 
@@ -629,6 +660,7 @@ app.whenReady().then(() => {
   remoteBridge = new DesktopRemoteBridge(app, harness);
   runtimeApiService = new RuntimeApiService({ app, harness });
   runtimeApiService.on("status", sendRuntimeApiStatus);
+  runtimeApiService.on("thread-event", sendRuntimeApiThreadEvent);
   createOrchestrator();
 
   harness.on("terminal:data", (data) => {

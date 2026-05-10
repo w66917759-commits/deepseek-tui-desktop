@@ -30,6 +30,16 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
   cancelRuntimeTurn: (payload) => ipcRenderer.invoke("runtime:cancelTurn", payload),
   getRuntimeApiStatus: (settings) => ipcRenderer.invoke("runtimeApi:getStatus", settings),
   getRuntimeApiInfo: (settings) => ipcRenderer.invoke("runtimeApi:getInfo", settings),
+  listRuntimeApiThreads: (settings) => ipcRenderer.invoke("runtimeApi:listThreads", settings),
+  createRuntimeApiThread: (payload) => ipcRenderer.invoke("runtimeApi:createThread", payload),
+  getRuntimeApiThread: (payload) => ipcRenderer.invoke("runtimeApi:getThread", payload),
+  startRuntimeApiThreadTurn: (payload) => ipcRenderer.invoke("runtimeApi:startThreadTurn", payload),
+  resumeRuntimeApiThread: (payload) => ipcRenderer.invoke("runtimeApi:resumeThread", payload),
+  forkRuntimeApiThread: (payload) => ipcRenderer.invoke("runtimeApi:forkThread", payload),
+  archiveRuntimeApiThread: (payload) => ipcRenderer.invoke("runtimeApi:archiveThread", payload),
+  steerRuntimeApiTurn: (payload) => ipcRenderer.invoke("runtimeApi:steerTurn", payload),
+  interruptRuntimeApiTurn: (payload) => ipcRenderer.invoke("runtimeApi:interruptTurn", payload),
+  answerRuntimeApiUserInput: (payload) => ipcRenderer.invoke("runtimeApi:answerUserInput", payload),
   listRuntimeApiSkills: (settings) => ipcRenderer.invoke("runtimeApi:listSkills", settings),
   setRuntimeApiSkillEnabled: (payload) => ipcRenderer.invoke("runtimeApi:setSkillEnabled", payload),
   listRuntimeApiMcpServers: (settings) => ipcRenderer.invoke("runtimeApi:listMcpServers", settings),
@@ -89,6 +99,11 @@ contextBridge.exposeInMainWorld("deepseekDesktop", {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("runtimeApi:status", listener);
     return () => ipcRenderer.removeListener("runtimeApi:status", listener);
+  },
+  onRuntimeApiThreadEvent: (callback) => {
+    const listener = (_event, event) => callback(event);
+    ipcRenderer.on("runtimeApi:threadEvent", listener);
+    return () => ipcRenderer.removeListener("runtimeApi:threadEvent", listener);
   },
   onRemoteStatus: (callback) => {
     const listener = (_event, status) => callback(status);
