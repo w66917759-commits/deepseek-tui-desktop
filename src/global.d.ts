@@ -85,6 +85,8 @@ declare global {
   type ProviderMode = "deepseek" | "nvidia-nim";
   type AppLanguage = "zh" | "en";
   type DeepSeekThinkingMode = "max" | "high" | "off";
+  type SkillRoutingMode = "auto" | "manual" | "all";
+  type ModelRoutingMode = "auto" | "manual";
   type WorkspaceEditor = "cursor" | "vscode";
   type AutomationFrequency = "hourly" | "daily" | "weekly" | "custom";
   type AutomationStatus = "ACTIVE" | "PAUSED";
@@ -154,6 +156,8 @@ declare global {
 	    maxSubagents: number;
 	    processStreamEnabled: boolean;
     thinkingMode: DeepSeekThinkingMode;
+    skillRoutingMode: SkillRoutingMode;
+    modelRoutingMode: ModelRoutingMode;
     harnessEnabled: boolean;
     launchAction: LaunchAction;
     rememberWorkspace: boolean;
@@ -288,6 +292,29 @@ declare global {
     createdAt: string;
   }
 
+  type TaskAgentRole = "planner" | "explorer" | "worker" | "reviewer" | "tester" | "build-fixer";
+
+  interface TaskBoardItem {
+    id: string;
+    title: string;
+    goal: string;
+    agentRole: TaskAgentRole;
+    dependencies: string[];
+    targetAreas: string[];
+    acceptance: string[];
+    status: "draft" | "queued" | "running" | "completed" | "failed" | "blocked";
+  }
+
+  interface TaskBoardPlan {
+    id: string;
+    sourcePrompt: string;
+    createdAt: string;
+    model: string;
+    activeSkillIds: string[];
+    items: TaskBoardItem[];
+    warnings: string[];
+  }
+
   interface ConversationSession {
     id: string;
     projectId: string;
@@ -299,6 +326,8 @@ declare global {
     updatedAt: string;
     messages: ConversationMessage[];
     contextAnchors?: ContextAnchor[];
+    taskBoards?: TaskBoardPlan[];
+    activeTaskBoardId?: string;
   }
 
   interface ConversationProject {
@@ -398,6 +427,9 @@ declare global {
 	    name: string;
 	    status: RuntimeAgentStatus;
 	    summary: string;
+	    type?: "planner" | "explorer" | "worker" | "reviewer" | "build-fixer" | "tester" | "custom";
+	    typeLabel?: string;
+	    classificationSource?: "confirmed" | "observed";
 	    source: "pty" | "runtime-api";
 	    createdAt: string;
 	    updatedAt: string;

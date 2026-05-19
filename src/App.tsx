@@ -61,6 +61,8 @@ import {
   selectContextAnchorDraft
 } from "./contextAnchors";
 import { formatProcessStreamOutput, normalizeDeepSeekThinkingMode, runtimeTurnOutputChunk } from "./processStream";
+import { appendDesktopHookEvent, type DesktopHookEvent } from "./desktopHooks";
+import { routeModelForPrompt, type ModelRouteDecision } from "./modelRouter";
 import {
   appendRuntimePromptMessages,
   buildRecallArchivePrompt,
@@ -69,9 +71,19 @@ import {
   summarizeRuntimeContextHealth,
   shouldRenderRuntimeConversation
 } from "./runtimeConversation";
+import { deriveInteractionState, type DeriveInteractionStateOptions, type InteractionPhase, type InteractionState } from "./interactionState";
+import { buildRuntimeTimeline, type RuntimeTimeline, type RuntimeTimelineEntry } from "./runtimeTimeline";
+import { routeSkillsForPrompt, type SkillRouteDecision } from "./skillRouter";
+import {
+  applyRuntimeStatusToTaskBoard,
+  buildTaskBoardExecutionPrompt,
+  buildTaskDecompositionPrompt,
+  parseTaskBoardPlan,
+  shouldCreateTaskBoard
+} from "./taskDecomposition";
 
 type InspectorPanel = "skills" | "remote" | "git" | "settings" | null;
-type MainView = "chat" | "tools" | "tasks" | "terminal";
+type MainView = "chat" | "tools" | "tasks";
 type ToolPage = "overview" | "skills" | "mcp";
 type PermissionMode = "plan" | "agent" | "yolo";
 type DeepSeekEndpointMode = "stable" | "beta" | "custom";
@@ -176,6 +188,16 @@ const DEEPSEEK_V4_RELEASE_DOC_URL = "https://api-docs.deepseek.com/news/news2604
 const DEEPSEEK_MODEL_PRICING_DOC_URL = "https://api-docs.deepseek.com/quick_start/pricing/";
 const ACTIVE_RUNTIME_TURN_STATUSES = new Set<RuntimeTurnStatus>(["queued", "running", "cancelling"]);
 const ACTIVE_RUNTIME_API_TURN_STATUSES = new Set<RuntimeApiTurnStatus>(["queued", "in_progress", "waiting_user_input"]);
+const SUBMIT_BLOCKING_INTERACTION_PHASES = new Set<InteractionPhase>([
+  "blocked",
+  "routing",
+  "queued",
+  "running",
+  "streaming",
+  "waiting_user_input",
+  "waiting_approval",
+  "stale_running"
+]);
 
 interface DeepSeekModelPreset {
   value: string;
@@ -204,6 +226,8 @@ const defaultSettings: DesktopSettings = {
   maxSubagents: 10,
   processStreamEnabled: true,
   thinkingMode: "max",
+  skillRoutingMode: "auto",
+  modelRoutingMode: "auto",
   harnessEnabled: false,
   launchAction: "tui",
   rememberWorkspace: true,
@@ -620,9 +644,6 @@ const uiCopy = {
       viewSwitch: "界面视图切换",
 	      chat: "对话",
 	      tools: "工具",
-	      agents: "Agents",
-	      tasks: "定时任务",
-	      terminal: "过程",
       checkRuntime: "检查运行环境",
       chooseWorkspace: "选择 workspace",
       currentBranch: "当前分支",
@@ -1012,6 +1033,10 @@ const uiCopy = {
 	      processStreamHint: "打开后右侧显示运行过程，并在启动时启用流式过程输出；关闭后只保留主对话回复。",
 	      thinkingMode: "Thinking 模式",
 	      thinkingModeHint: "默认 Max；High 保留较强推理但输出更克制，Off 关闭思考过程。",
+	      skillRoutingMode: "Skill 路由",
+	      skillRoutingModeHint: "Auto 会按本轮任务选择 Skill；Manual 只响应 /skill-name；All 保持旧的全量注入。",
+	      modelRoutingMode: "模型路由",
+	      modelRoutingModeHint: "Auto 会让短任务走 Flash、计划/审查/长任务走 Pro；Manual 保持手动选择。",
 	      layeredContext: "分层上下文保留",
 	      layeredContextHint: "默认开启后，长任务会先生成 append-only context seams，再进入 hard cycle，减少忘记前文的情况。",
 	      contextVerbatimWindowTurns: "最近逐字保留轮数",
@@ -1114,9 +1139,6 @@ const uiCopy = {
       viewSwitch: "UI view switch",
 	      chat: "Chat",
 	      tools: "Tools",
-	      agents: "Agents",
-	      tasks: "Tasks",
-	      terminal: "Process",
       checkRuntime: "Check runtime",
       chooseWorkspace: "Choose workspace",
       currentBranch: "Current branch",
@@ -1506,6 +1528,10 @@ const uiCopy = {
 	      processStreamHint: "When enabled, the right-side run stream is shown and runtime process output is requested at launch. When disabled, only the main chat reply is kept.",
 	      thinkingMode: "Thinking mode",
 	      thinkingModeHint: "Defaults to Max. High keeps strong reasoning with a quieter stream; Off disables thinking output.",
+	      skillRoutingMode: "Skill routing",
+	      skillRoutingModeHint: "Auto selects Skills per turn; Manual only honors /skill-name; All keeps the previous always-on behavior.",
+	      modelRoutingMode: "Model routing",
+	      modelRoutingModeHint: "Auto sends short turns to Flash and planning/review/long tasks to Pro; Manual keeps the selected model.",
 	      layeredContext: "Layered context retention",
 	      layeredContextHint: "When enabled, long tasks produce append-only context seams before a hard cycle, which reduces dropped details across long runs.",
 	      contextVerbatimWindowTurns: "Recent verbatim turns",
@@ -1684,6 +1710,8 @@ function normalizeSettings(settings: DesktopSettings): DesktopSettings {
       : settings.model || DEFAULT_DEEPSEEK_MODEL,
     baseUrl: settings.baseUrl || defaultBaseUrlForProvider(provider),
     thinkingMode: normalizeDeepSeekThinkingMode(settings.thinkingMode),
+    skillRoutingMode: ["auto", "manual", "all"].includes(settings.skillRoutingMode) ? settings.skillRoutingMode : "auto",
+    modelRoutingMode: settings.modelRoutingMode === "manual" ? "manual" : "auto",
     layeredContextEnabled: settings.layeredContextEnabled !== false,
     contextVerbatimWindowTurns: normalizeContextVerbatimWindowTurns(settings.contextVerbatimWindowTurns)
   };
@@ -1957,6 +1985,52 @@ function runtimeStatusText(status: RuntimeRunStatus | RuntimeAgentStatus, langua
   return uiCopy[language].runtimeAgents.statuses[status] || status;
 }
 
+function taskBoardStatusText(status: TaskBoardItem["status"], language: AppLanguage) {
+  const zh: Record<TaskBoardItem["status"], string> = {
+    draft: "待确认",
+    queued: "排队",
+    running: "运行中",
+    completed: "完成",
+    failed: "失败",
+    blocked: "阻塞"
+  };
+  const en: Record<TaskBoardItem["status"], string> = {
+    draft: "Draft",
+    queued: "Queued",
+    running: "Running",
+    completed: "Completed",
+    failed: "Failed",
+    blocked: "Blocked"
+  };
+  return language === "zh" ? zh[status] : en[status];
+}
+
+function taskBoardRoleText(role: TaskAgentRole, language: AppLanguage) {
+  const zh: Record<TaskAgentRole, string> = {
+    planner: "规划",
+    explorer: "探索",
+    worker: "实现",
+    reviewer: "审查",
+    tester: "测试",
+    "build-fixer": "构建修复"
+  };
+  const en: Record<TaskAgentRole, string> = {
+    planner: "Planner",
+    explorer: "Explorer",
+    worker: "Worker",
+    reviewer: "Reviewer",
+    tester: "Tester",
+    "build-fixer": "Build Fixer"
+  };
+  return language === "zh" ? zh[role] : en[role];
+}
+
+function latestRuntimeAssistantText(detail: RuntimeApiThreadDetail | null | undefined) {
+  return conversationMessagesFromRuntimeDetail(detail)
+    .filter((message) => message.role === "assistant")
+    .at(-1)?.content || "";
+}
+
 function RunningActivityMark({ compact = false }: { compact?: boolean }) {
   return (
     <span className={compact ? "running-activity-mark compact" : "running-activity-mark"} aria-hidden>
@@ -2025,6 +2099,35 @@ function sanitizeConversationMessages(messages: ChatMessage[], language: AppLang
   });
 }
 
+function normalizeTaskBoardList(value: unknown): TaskBoardPlan[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((candidate): candidate is TaskBoardPlan => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const board = candidate as Partial<TaskBoardPlan>;
+    return Boolean(
+      board.id
+      && board.sourcePrompt
+      && Array.isArray(board.items)
+      && board.items.every((item) => (
+        item
+        && typeof item.id === "string"
+        && typeof item.title === "string"
+        && typeof item.goal === "string"
+        && typeof item.agentRole === "string"
+        && Array.isArray(item.dependencies)
+        && Array.isArray(item.targetAreas)
+        && Array.isArray(item.acceptance)
+      ))
+    );
+  });
+}
+
+function activeTaskBoardForSession(session: ConversationSession | null | undefined) {
+  const boards = normalizeTaskBoardList(session?.taskBoards || []);
+  if (boards.length === 0) return null;
+  return boards.find((board) => board.id === session?.activeTaskBoardId) || boards.at(-1) || null;
+}
+
 function projectIdFromWorkspace(workspacePath: string) {
   const normalized = workspacePath.trim().replace(/[\\/]+$/, "");
   return normalized || "no-workspace";
@@ -2055,7 +2158,8 @@ function createConversationSession(
     createdAt: now,
     updatedAt: now,
     messages,
-    contextAnchors: []
+    contextAnchors: [],
+    taskBoards: []
   };
 }
 
@@ -2158,7 +2262,9 @@ function normalizeConversationStore(store: ConversationStore, settings: DesktopS
           ? project.sessions.map((session) => ({
             ...session,
             messages: sanitizeConversationMessages(Array.isArray(session.messages) ? session.messages : [], language),
-            contextAnchors: normalizeContextAnchors(Array.isArray(session.contextAnchors) ? session.contextAnchors : [])
+            contextAnchors: normalizeContextAnchors(Array.isArray(session.contextAnchors) ? session.contextAnchors : []),
+            taskBoards: normalizeTaskBoardList(session.taskBoards),
+            activeTaskBoardId: typeof session.activeTaskBoardId === "string" ? session.activeTaskBoardId : undefined
           }))
           : []
       }))
@@ -2309,6 +2415,16 @@ function runtimeItemTitle(item: RuntimeApiItemRecord) {
   return "";
 }
 
+function runtimeTimelineTitle(entry: RuntimeTimelineEntry, language: AppLanguage) {
+  if (entry.kind === "finalAnswer") return language === "zh" ? "最终回复" : "Final answer";
+  if (entry.kind === "question") return language === "zh" ? "需要确认" : "Question";
+  if (entry.kind === "approval") return language === "zh" ? "需要批准" : "Approval";
+  if (entry.kind === "error") return language === "zh" ? "错误" : "Error";
+  if (entry.kind === "action") return language === "zh" ? "执行动作" : "Action";
+  if (entry.kind === "toolCall") return language === "zh" ? "工具调用" : "Tool call";
+  return runtimeItemTitle(entry.item as RuntimeApiItemRecord);
+}
+
 function runtimeThreadEventOutputChunk(event: RuntimeApiThreadEventRecord) {
   if (event.event === "item.delta") {
     return String(event.payload?.delta || "");
@@ -2341,6 +2457,87 @@ function runtimeContextTurnStatusLabel(status: string, language: AppLanguage) {
     return uiCopy[language].runtimeContext.completed;
   }
   return status;
+}
+
+function interactionPhaseLabel(state: InteractionState, language: AppLanguage) {
+  const zh: Record<InteractionPhase, string> = {
+    ready: "可发送",
+    routing: "正在路由",
+    queued: "已排队",
+    running: "正在执行",
+    streaming: "正在输出",
+    waiting_user_input: "等待你的选择",
+    waiting_approval: "等待批准",
+    blocked: "需要配置",
+    completed: "已完成",
+    failed: "运行失败",
+    cancelled: "已取消",
+    stale_running: "暂无新输出"
+  };
+  const en: Record<InteractionPhase, string> = {
+    ready: "Ready",
+    routing: "Routing",
+    queued: "Queued",
+    running: "Running",
+    streaming: "Streaming",
+    waiting_user_input: "Waiting for input",
+    waiting_approval: "Waiting for approval",
+    blocked: "Setup needed",
+    completed: "Completed",
+    failed: "Failed",
+    cancelled: "Cancelled",
+    stale_running: "No recent output"
+  };
+  return (language === "zh" ? zh : en)[state.phase];
+}
+
+function interactionDetailText(state: InteractionState, language: AppLanguage) {
+  if (state.reason === "missing_api_key") {
+    return language === "zh" ? "先在设置里填入 API Key" : "Add an API key in settings first";
+  }
+  if (state.reason === "missing_workspace") {
+    return language === "zh" ? "先选择本次任务要操作的 workspace" : "Choose a workspace for this task first";
+  }
+  if (state.reason === "routing_runtime") {
+    return language === "zh" ? "正在选择 Skill、模型和运行配置" : "Selecting skills, model, and runtime settings";
+  }
+  if (state.reason === "turn_queued") {
+    return language === "zh" ? "任务已进入队列，稍后开始执行" : "The task is queued and will start shortly";
+  }
+  if (state.reason === "streaming_output") {
+    return language === "zh" ? "运行时仍在输出，结果会持续追加" : "Runtime output is still streaming";
+  }
+  if (state.reason === "runtime_running") {
+    return language === "zh" ? "长任务正在执行，可以随时停止" : "The long task is running and can be stopped";
+  }
+  if (state.reason === "running_without_recent_output") {
+    return language === "zh" ? "任务仍处于运行态，但最近没有新的输出" : "The task is still running, but no new output has arrived recently";
+  }
+  if (state.reason === "waiting_user_input") {
+    return language === "zh" ? "请先回答运行时提出的问题" : "Answer the runtime question before sending another prompt";
+  }
+  if (state.reason === "waiting_approval") {
+    return language === "zh" ? "请先允许或拒绝待处理动作" : "Allow or deny the pending action before continuing";
+  }
+  if (state.reason === "runtime_api_unavailable") {
+    return state.detail || (language === "zh" ? "Runtime API 暂不可用" : "Runtime API is unavailable");
+  }
+  if (state.reason === "runtime_failed") {
+    return state.detail || (language === "zh" ? "可以修正输入后重试" : "You can adjust the prompt and retry");
+  }
+  if (state.capabilityIssue) {
+    const issue = state.capabilityIssue;
+    return language === "zh"
+      ? `已选择的 ${issue.id} 当前不可调用：${issue.reason || issue.state}`
+      : `Selected ${issue.id} is not callable: ${issue.reason || issue.state}`;
+  }
+  if (state.reason === "runtime_completed") {
+    return language === "zh" ? "可以继续发送下一步" : "You can send the next step";
+  }
+  if (state.reason === "runtime_cancelled") {
+    return language === "zh" ? "本轮已停止，可以重新发送" : "This turn stopped. You can send again";
+  }
+  return language === "zh" ? "准备接收下一条任务" : "Ready for the next task";
 }
 
 function App() {
@@ -2403,6 +2600,13 @@ function App() {
   const [gitDiffSummary, setGitDiffSummary] = useState("");
   const [gitDiffBusy, setGitDiffBusy] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(() => [createWelcomeMessage(defaultSettings.language)]);
+  const [lastSkillRoute, setLastSkillRoute] = useState<SkillRouteDecision | null>(null);
+  const [lastModelRoute, setLastModelRoute] = useState<ModelRouteDecision | null>(null);
+  const [taskBoardBusy, setTaskBoardBusy] = useState(false);
+  const [taskBoardMessage, setTaskBoardMessage] = useState("");
+  const [taskBoardFallbackPrompt, setTaskBoardFallbackPrompt] = useState("");
+  const [desktopHookEvents, setDesktopHookEvents] = useState<DesktopHookEvent[]>([]);
+  const [interactionNow, setInteractionNow] = useState(() => Date.now());
   const [conversationStore, setConversationStore] = useState<ConversationStore>({ activeSessionId: "", projects: [] });
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
   const historyScrollRef = useRef<HTMLElement | null>(null);
@@ -2416,6 +2620,7 @@ function App() {
   const terminalRawOutputBySessionRef = useRef<Record<string, string>>({});
   const terminalOutputBySessionRef = useRef<Record<string, string>>({});
   const runCaptureRef = useRef<RunCapture | null>(null);
+  const runtimeAgentSignatureRef = useRef("");
   const conversationStoreRef = useRef<ConversationStore>({ activeSessionId: "", projects: [] });
   const desktop = useMemo(() => getDesktopBridge(), []);
   const language = settings.language;
@@ -2438,12 +2643,16 @@ function App() {
     () => findConversationSession(conversationStore, conversationStore.activeSessionId),
     [conversationStore]
   );
+  const activeTaskBoard = useMemo(
+    () => activeTaskBoardForSession(activeSession),
+    [activeSession]
+  );
   const activeRuntimeThreadDetail = useMemo(
     () => activeSession?.runtimeThreadId ? runtimeThreadDetails[activeSession.runtimeThreadId] || null : null,
     [activeSession?.runtimeThreadId, runtimeThreadDetails]
   );
-  const activeRuntimeThreadItems = useMemo(
-    () => orderedRuntimeConversationItems(activeRuntimeThreadDetail) as RuntimeApiItemRecord[],
+  const activeRuntimeTimeline = useMemo(
+    () => buildRuntimeTimeline(activeRuntimeThreadDetail) as RuntimeTimeline,
     [activeRuntimeThreadDetail]
   );
   const activeRuntimeContextHealth = useMemo(
@@ -2481,6 +2690,12 @@ function App() {
     )),
     [conversationStore.activeSessionId, runtimeOrchestratorSnapshot.turns]
   );
+  const activeTaskBoardWithRuntimeStatus = useMemo(
+    () => activeTaskBoard
+      ? applyRuntimeStatusToTaskBoard(activeTaskBoard, runtimeSnapshot.agents || [], activeSessionRuntimeTurns)
+      : null,
+    [activeSessionRuntimeTurns, activeTaskBoard, runtimeSnapshot.agents]
+  );
   const activeRuntimeApiBusy = useMemo(
     () => activeRuntimeThreadDetail?.turns.some((turn) => ACTIVE_RUNTIME_API_TURN_STATUSES.has(turn.status)) || false,
     [activeRuntimeThreadDetail]
@@ -2488,6 +2703,43 @@ function App() {
   const activeSessionTerminalRunning = running
     && (!terminalRunSessionIdRef.current || terminalRunSessionIdRef.current === conversationStore.activeSessionId);
   const activeSessionBusy = activeSessionRuntimeTurns.length > 0 || activeRuntimeApiBusy || activeSessionTerminalRunning;
+  const interactionStateBase = useMemo<DeriveInteractionStateOptions>(() => ({
+    hasApiKey: hasGlobalApiKey,
+    workspacePath: selectedWorkspacePath,
+    statusType: status.type,
+    statusMessage: status.type === "error" ? status.message : "",
+    isRouting: status.type === "launching",
+    activeTerminalRunning: activeSessionTerminalRunning,
+    activeRuntimeTurns: activeSessionRuntimeTurns,
+    runtimeApiTurns: activeRuntimeThreadDetail?.turns || [],
+    runtimeItems: activeRuntimeThreadDetail?.items || [],
+    runtimeSnapshot,
+    runtimeApiStatus,
+    runtimeEvents,
+    selectedCapabilities: runtimeApiMcpServers,
+    processStreamEnabled,
+    nowMs: interactionNow
+  }), [
+    activeRuntimeThreadDetail,
+    activeSessionRuntimeTurns,
+    activeSessionTerminalRunning,
+    hasGlobalApiKey,
+    interactionNow,
+    processStreamEnabled,
+    runtimeApiMcpServers,
+    runtimeApiStatus,
+    runtimeEvents,
+    runtimeSnapshot,
+    selectedWorkspacePath,
+    status
+  ]);
+  const interactionState = useMemo(
+    () => deriveInteractionState({ ...interactionStateBase, prompt: agentPrompt }),
+    [agentPrompt, interactionStateBase]
+  );
+  const composerCanSubmit = interactionState.canSubmit;
+  const composerCanStop = interactionState.canStop || activeSessionBusy;
+  const interactionBlocksNewPrompt = SUBMIT_BLOCKING_INTERACTION_PHASES.has(interactionState.phase);
   const activeSessionRunningReplyIds = useMemo(
     () => new Set(activeSessionRuntimeTurns.map((turn) => turn.replyMessageId).filter(Boolean)),
     [activeSessionRuntimeTurns]
@@ -2518,6 +2770,13 @@ function App() {
   useEffect(() => {
     activeSessionIdRef.current = conversationStore.activeSessionId;
   }, [conversationStore.activeSessionId]);
+
+  useEffect(() => {
+    setInteractionNow(Date.now());
+    if (!activeSessionBusy && runtimeSnapshot.status !== "running" && status.type !== "launching") return undefined;
+    const timer = window.setInterval(() => setInteractionNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, [activeSessionBusy, runtimeSnapshot.status, status.type]);
 
   const updateHistoryScrollState = useCallback(() => {
     const node = historyScrollRef.current;
@@ -2570,10 +2829,17 @@ function App() {
     }).catch(() => {
       // Older preview bridges may not expose runtime state during hot reload.
     });
-    const offSnapshot = desktop.onRuntimeSnapshot((snapshot) => {
-      setRuntimeSnapshot(snapshot);
-      setRuntimeEvents(snapshot.events || []);
-    });
+	    const offSnapshot = desktop.onRuntimeSnapshot((snapshot) => {
+	      setRuntimeSnapshot(snapshot);
+	      setRuntimeEvents(snapshot.events || []);
+	      const agentSignature = (snapshot.agents || []).map((agent) => `${agent.id}:${agent.status}:${agent.type || ""}`).join("|");
+	      if (agentSignature && agentSignature !== runtimeAgentSignatureRef.current) {
+	        runtimeAgentSignatureRef.current = agentSignature;
+	        setDesktopHookEvents((events) => appendDesktopHookEvent(events, "afterAgentStateChange", "Agent state changed", {
+	          agents: snapshot.agents
+	        }));
+	      }
+	    });
     const offEvent = desktop.onRuntimeEvent((event) => {
       setRuntimeEvents((current) => [...current, event].slice(-80));
     });
@@ -2598,9 +2864,7 @@ function App() {
     if (!terminal) return;
     terminal.clear();
     const output = sessionId
-      ? mainView === "terminal"
-        ? terminalRawOutputBySessionRef.current[sessionId] || terminalOutputBySessionRef.current[sessionId] || ""
-        : terminalOutputBySessionRef.current[sessionId] || ""
+      ? terminalOutputBySessionRef.current[sessionId] || ""
       : "";
     if (output) {
       terminal.write(output);
@@ -2608,7 +2872,7 @@ function App() {
     }
     terminal.write(t.terminal.bootReady);
     terminal.write(t.terminal.bootHint);
-  }, [mainView, t]);
+  }, [t]);
 
   useEffect(() => {
     let active = true;
@@ -2628,11 +2892,7 @@ function App() {
       if (sessionId && chunk) {
         appendProcessStreamForSession(sessionId, chunk);
         if (activeSessionIdRef.current === sessionId) {
-          if (mainView === "terminal") {
-            terminalRef.current?.write(chunk);
-          } else {
-            renderTerminalForSession(sessionId);
-          }
+          renderTerminalForSession(sessionId);
         }
       }
       if (eventType === "turn-started") {
@@ -2641,6 +2901,11 @@ function App() {
         }
       }
       if (eventType === "turn-completed" || eventType === "turn-failed" || eventType === "turn-cancelled") {
+        setDesktopHookEvents((events) => appendDesktopHookEvent(events, "afterTurnComplete", eventType, {
+          conversationId: sessionId,
+          turnId: event.turnId || "",
+          status: eventType
+        }));
         const replyMessageId = event.replyMessageId || "";
         if (sessionId && replyMessageId) {
           const content = eventType === "turn-completed"
@@ -2680,7 +2945,7 @@ function App() {
       offSnapshot();
       offTurn();
     };
-  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, mainView, renderTerminalForSession, t]);
+  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, renderTerminalForSession, t]);
 
   const fitTerminal = useCallback(() => {
     const host = terminalHostRef.current;
@@ -2884,7 +3149,7 @@ function App() {
   }, [remoteStatus?.auth.account]);
 
   useEffect(() => {
-    if (mainView !== "chat" && mainView !== "terminal") {
+    if (mainView !== "chat") {
       return;
     }
 
@@ -2968,9 +3233,7 @@ function App() {
         capture.output = appendTerminalCapture(capture.output, data);
       }
       if (!terminalSessionId || activeSessionIdRef.current === terminalSessionId) {
-        if (mainView === "terminal") {
-          terminalRef.current?.write(data);
-        } else if (terminalSessionId) {
+        if (terminalSessionId) {
           renderTerminalForSession(terminalSessionId);
         }
       }
@@ -3006,7 +3269,7 @@ function App() {
       offData();
       offExit();
     };
-  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, mainView, renderTerminalForSession, t]);
+  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, renderTerminalForSession, t]);
 
   const enabledMcpCount = settings.enabledMcpServers.length;
   const enabledSkillCount = settings.enabledSkills.length;
@@ -3051,6 +3314,42 @@ function App() {
       };
     }).filter((skill): skill is SkillCatalogItem => Boolean(skill));
   }, [customization, language, t]);
+  const routePromptForRun = useCallback((prompt: string, mode: PermissionMode, sourceSettings: DesktopSettings = settings) => {
+    setDesktopHookEvents((events) => appendDesktopHookEvent(events, "beforePromptRoute", "Prompt routing started", {
+      prompt,
+      mode
+    }));
+    const skillTemplates = Object.fromEntries(skillCatalog.map((skill) => [skill.id, skill]));
+    const skillRoute = routeSkillsForPrompt({
+      prompt,
+      workspacePath: sourceSettings.workspacePath,
+      settings: sourceSettings,
+      skillTemplates
+    });
+    const modelRoute = routeModelForPrompt({
+      prompt: skillRoute.sanitizedPrompt || prompt,
+      permissionMode: mode,
+      settings: sourceSettings,
+      activeSkillIds: skillRoute.activeSkillIds
+    });
+    setLastSkillRoute(skillRoute);
+    setLastModelRoute(modelRoute);
+    setDesktopHookEvents((events) => appendDesktopHookEvent(events, "afterSkillRoute", "Skill route resolved", {
+      activeSkillIds: skillRoute.activeSkillIds,
+      model: modelRoute.apiModel
+    }));
+    return {
+      skillRoute,
+      modelRoute,
+      prompt: skillRoute.sanitizedPrompt || prompt,
+      runtimeSettings: {
+        ...sourceSettings,
+        enabledSkills: skillRoute.activeSkillIds,
+        model: modelRoute.apiModel,
+        provider: modelRoute.provider
+      }
+    };
+  }, [settings, skillCatalog]);
   const mcpCategories = useMemo(() => {
     return ["All", ...Array.from(new Set(mcpPresets.map((preset) => preset.category)))] as Array<"All" | McpPreset["category"]>;
   }, []);
@@ -3554,11 +3853,7 @@ function App() {
       if (sessionId && chunk) {
         appendProcessStreamForSession(sessionId, chunk);
         if (activeSessionIdRef.current === sessionId) {
-          if (mainView === "terminal") {
-            terminalRef.current?.write(chunk);
-          } else {
-            renderTerminalForSession(sessionId);
-          }
+          renderTerminalForSession(sessionId);
         }
       }
       const turnStatus = envelope.detail.turns.at(-1)?.status || "";
@@ -3573,19 +3868,27 @@ function App() {
       if (sessionId) {
         syncRuntimeDetailAnchors(sessionId, envelope.detail);
       }
-      if (activeSessionIdRef.current === sessionId) {
-        if (ACTIVE_RUNTIME_API_TURN_STATUSES.has(turnStatus as RuntimeApiTurnStatus)) {
-          setStatus({ type: "running" });
-        } else if (turnStatus === "completed") {
-          setStatus({ type: "exited", exitCode: 0 });
-        } else if (turnStatus === "failed") {
-          setStatus({ type: "error", message: String(envelope.detail.turns.at(-1)?.error || t.runSummary.failedShort) });
+	      if (activeSessionIdRef.current === sessionId) {
+	        if (ACTIVE_RUNTIME_API_TURN_STATUSES.has(turnStatus as RuntimeApiTurnStatus)) {
+	          setStatus({ type: "running" });
+	        } else if (turnStatus === "completed") {
+	          setDesktopHookEvents((events) => appendDesktopHookEvent(events, "afterTurnComplete", "Runtime API turn completed", {
+	            threadId,
+	            status: turnStatus
+	          }));
+	          setStatus({ type: "exited", exitCode: 0 });
+	        } else if (turnStatus === "failed") {
+	          setDesktopHookEvents((events) => appendDesktopHookEvent(events, "afterTurnComplete", "Runtime API turn failed", {
+	            threadId,
+	            status: turnStatus
+	          }));
+	          setStatus({ type: "error", message: String(envelope.detail.turns.at(-1)?.error || t.runSummary.failedShort) });
         } else if (turnStatus === "interrupted" || turnStatus === "canceled") {
           setStatus({ type: "stopped" });
         }
       }
     });
-  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, mainView, renderTerminalForSession, syncRuntimeDetailAnchors, t]);
+  }, [appendProcessStreamForSession, commitConversationStore, desktop, language, renderTerminalForSession, syncRuntimeDetailAnchors, t]);
 
   useEffect(() => {
     const threadId = activeSession?.runtimeThreadId || "";
@@ -3616,9 +3919,13 @@ function App() {
       ...launchOverrides,
       launchAction
     });
+    const routing = prompt
+      ? routePromptForRun(prompt, launchAction === "plan" ? "plan" : launchAction === "yolo" ? "yolo" : "agent", nextSettings)
+      : null;
+    const effectivePrompt = routing?.prompt || prompt;
     const runtimeSettings = {
-      ...nextSettings,
-      model: apiModelForProvider(nextSettings.provider, nextSettings.model)
+      ...(routing?.runtimeSettings || nextSettings),
+      model: routing?.modelRoute.apiModel || apiModelForProvider(nextSettings.provider, nextSettings.model)
     };
     const terminalSessionId = captureSessionId || activeSessionIdRef.current;
     terminalRunSessionIdRef.current = terminalSessionId;
@@ -3632,7 +3939,7 @@ function App() {
     const shouldCapture = Boolean(prompt) && (launchAction === "exec" || launchAction === "plan" || launchAction === "yolo");
     runCaptureRef.current = shouldCapture ? {
       action: launchAction,
-      prompt,
+      prompt: effectivePrompt,
       sessionId: terminalSessionId,
       replyMessageId,
       workspacePath: nextSettings.workspacePath,
@@ -3658,7 +3965,7 @@ function App() {
     const result = await desktop.startTerminal({
       ...runtimeSettings,
       apiKey: launchApiKey || undefined,
-      agentPrompt: prompt,
+      agentPrompt: effectivePrompt,
       cols: terminalRef.current?.cols,
       rows: terminalRef.current?.rows
     });
@@ -3672,7 +3979,7 @@ function App() {
     setRunning(Boolean(result.ok));
     setStatus(result.ok ? { type: "running", pid: result.pid } : { type: "error", message: result.error || t.status.launchFailed });
     return result;
-  }, [agentPrompt, apiKey, desktop, fitTerminal, renderTerminalForSession, settings, t]);
+  }, [agentPrompt, apiKey, desktop, fitTerminal, renderTerminalForSession, routePromptForRun, settings, t]);
 
   const stop = useCallback(async () => {
     let cancelledRuntimeTurn = false;
@@ -3900,31 +4207,64 @@ function App() {
     }
   }, [desktop, mcpSecretKey, mcpSecretTarget?.presetId, mcpSecretValue, settings, t]);
 
-  const sendPrompt = useCallback(async (options?: { prompt?: string; clearComposer?: boolean }) => {
+  const sendPrompt = useCallback(async (options?: {
+    prompt?: string;
+    clearComposer?: boolean;
+    skipTaskBoard?: boolean;
+    taskBoard?: TaskBoardPlan;
+  }) => {
     const prompt = String(options?.prompt ?? agentPrompt).trim();
     if (!prompt) return;
-    if (activeSessionBusy) return;
+    if (!deriveInteractionState({ ...interactionStateBase, prompt }).canSubmit) return;
+
     let currentSession = findConversationSession(conversationStore, conversationStore.activeSessionId)
       || createConversationSession(settings.workspacePath, language, [createWelcomeMessage(language)]);
     if (!findConversationSession(conversationStore, currentSession.id)) {
       applyConversationStore(upsertConversationSession(conversationStore, currentSession, language));
     }
+
     const targetSessionId = currentSession.id;
+    const baseRuntimeSettings = normalizeSettings({
+      ...settings,
+      launchAction: settings.launchAction,
+      processStreamEnabled,
+      model: selectedModelApiName
+    });
+    const routing = routePromptForRun(prompt, permissionMode, baseRuntimeSettings);
+    const runtimeSettings = normalizeSettings({
+      ...baseRuntimeSettings,
+      ...routing.runtimeSettings,
+      processStreamEnabled
+    });
+    const shouldPrepareTaskBoard = !options?.skipTaskBoard && !options?.taskBoard && shouldCreateTaskBoard({
+      prompt,
+      permissionMode,
+      skillRoutingMode: baseRuntimeSettings.skillRoutingMode,
+      activeSkillIds: routing.skillRoute.activeSkillIds
+    });
+    const displayPrompt = options?.taskBoard ? options.taskBoard.sourcePrompt : prompt;
+    const finalRuntimePrompt = options?.taskBoard
+      ? buildTaskBoardExecutionPrompt(options.taskBoard, language)
+      : routing.prompt;
+
     let pendingMessages: ChatMessage[] = currentSession.messages;
     commitConversationStore((current) => {
       const session = findConversationSession(current, targetSessionId) || currentSession;
       const isUntitled = !session.title || session.title === uiCopy[language].history.untitled;
-      pendingMessages = appendRuntimePromptMessages(session.messages, prompt, language, createId) as ChatMessage[];
+      pendingMessages = appendRuntimePromptMessages(session.messages, displayPrompt, language, createId) as ChatMessage[];
       currentSession = {
         ...session,
         workspacePath: settings.workspacePath,
-        title: isUntitled ? titleFromPrompt(prompt, uiCopy[language].history.untitled) : session.title,
+        title: isUntitled ? titleFromPrompt(displayPrompt, uiCopy[language].history.untitled) : session.title,
         updatedAt: new Date().toISOString(),
-        messages: pendingMessages
+        messages: pendingMessages,
+        taskBoards: session.taskBoards || []
       };
       return upsertConversationSession(current, currentSession, language);
     });
     setMessages(pendingMessages);
+    setTaskBoardMessage("");
+    setTaskBoardFallbackPrompt("");
     if (options?.clearComposer !== false) {
       setAgentPrompt("");
     }
@@ -3934,33 +4274,28 @@ function App() {
     if (activeSessionIdRef.current === targetSessionId) {
       renderTerminalForSession(targetSessionId);
     }
-    const runtimePrompt = buildAnchoredRuntimePrompt(prompt, currentSession.contextAnchors || [], language);
-    const runtimeSettings = normalizeSettings({
-      ...settings,
-      launchAction: settings.launchAction,
-      processStreamEnabled,
-      model: selectedModelApiName
-    });
-    if (runtimeSettings.rememberWorkspace) {
-      await desktop.saveSettings(runtimeSettings);
+
+    if (baseRuntimeSettings.rememberWorkspace) {
+      await desktop.saveSettings(baseRuntimeSettings);
     }
     const launchApiKey = apiKey.trim();
     if (launchApiKey) {
-      const keyResult = await desktop.saveApiKey({ provider: runtimeSettings.provider, apiKey: launchApiKey });
+      const keyResult = await desktop.saveApiKey({ provider: baseRuntimeSettings.provider, apiKey: launchApiKey });
       if (!keyResult.ok) {
         setStatus({ type: "error", message: keyResult.error || t.settings.apiKeySaveFailed });
         return;
       }
     }
+
     try {
       let runtimeThreadId = currentSession.runtimeThreadId || "";
       if (!runtimeThreadId) {
         const created = await desktop.createRuntimeApiThread({
           workspacePath: settings.workspacePath,
-          model: selectedModelApiName,
-          mode: permissionMode === "agent" ? "agent" : permissionMode,
-          allowShell: runtimeSettings.allowShell,
-          settings: runtimeSettings
+          model: routing.modelRoute.apiModel,
+          mode: shouldPrepareTaskBoard ? "plan" : permissionMode === "agent" ? "agent" : permissionMode,
+          allowShell: shouldPrepareTaskBoard ? false : runtimeSettings.allowShell,
+          settings: shouldPrepareTaskBoard ? { ...runtimeSettings, allowShell: false } : runtimeSettings
         });
         if (!created.ok || !created.thread?.id) {
           setStatus({ type: "error", message: created.error || t.status.launchFailed });
@@ -3984,12 +4319,96 @@ function App() {
           updatedAt: new Date().toISOString()
         })));
       }
+
+      if (shouldPrepareTaskBoard) {
+        setTaskBoardBusy(true);
+        setTaskBoardMessage(language === "zh" ? "正在生成任务拆解工作台…" : "Generating task board...");
+        const decompositionPrompt = buildTaskDecompositionPrompt({
+          sourcePrompt: prompt,
+          model: routing.modelRoute.apiModel,
+          activeSkillIds: routing.skillRoute.activeSkillIds,
+          maxSubagents: runtimeSettings.maxSubagents,
+          language
+        });
+        const result = await desktop.startRuntimeApiThreadTurn({
+          conversationId: targetSessionId,
+          threadId: runtimeThreadId,
+          workspacePath: settings.workspacePath,
+          prompt: decompositionPrompt,
+          model: routing.modelRoute.apiModel,
+          mode: "plan",
+          allowShell: false,
+          settings: { ...runtimeSettings, allowShell: false }
+        });
+        if (!result.ok || !result.threadId || !result.detail) {
+          const error = result.error || t.status.launchFailed;
+          setTaskBoardMessage(error);
+          setTaskBoardFallbackPrompt(prompt);
+          setStatus({ type: "error", message: error });
+          return;
+        }
+        setRuntimeThreadDetails((current) => ({ ...current, [result.threadId!]: result.detail! }));
+        const parsed = parseTaskBoardPlan(latestRuntimeAssistantText(result.detail), {
+          sourcePrompt: prompt,
+          model: routing.modelRoute.apiModel,
+          activeSkillIds: routing.skillRoute.activeSkillIds
+        });
+        if (!parsed.ok) {
+          const error = language === "zh"
+            ? `任务拆解失败：${parsed.error}`
+            : `Task decomposition failed: ${parsed.error}`;
+          setTaskBoardMessage(error);
+          setTaskBoardFallbackPrompt(prompt);
+          setStatus({ type: "error", message: parsed.error });
+          return;
+        }
+        const assistantMessage: ChatMessage = {
+          id: createId(),
+          role: "assistant",
+          title: language === "zh" ? "任务拆解工作台" : "Task Board",
+          content: language === "zh"
+            ? "已生成任务拆解工作台。确认后可以按任务板执行，或跳过任务板直接执行原任务。"
+            : "Task board generated. You can execute from the board or skip it and run the original task directly."
+        };
+        commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
+          ...session,
+          runtimeThreadId: result.threadId,
+          updatedAt: new Date().toISOString(),
+          taskBoards: [...normalizeTaskBoardList(session.taskBoards), parsed.plan],
+          activeTaskBoardId: parsed.plan.id,
+          messages: [...session.messages.filter((message) => message.content !== (language === "zh" ? "正在等待运行时回复…" : "Waiting for runtime response...")), assistantMessage]
+        })));
+        if (activeSessionIdRef.current === targetSessionId) {
+          setMessages((current) => [
+            ...current.filter((message) => message.content !== (language === "zh" ? "正在等待运行时回复…" : "Waiting for runtime response...")),
+            assistantMessage
+          ]);
+        }
+        setTaskBoardMessage(language === "zh" ? "任务板已生成。" : "Task board generated.");
+        setStatus({ type: "exited", exitCode: 0 });
+        return;
+      }
+
+      if (options?.taskBoard) {
+        const queuedBoard: TaskBoardPlan = {
+          ...options.taskBoard,
+          items: options.taskBoard.items.map((item) => ({ ...item, status: item.status === "completed" ? "completed" : "queued" }))
+        };
+        commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          taskBoards: normalizeTaskBoardList(session.taskBoards).map((board) => board.id === queuedBoard.id ? queuedBoard : board),
+          activeTaskBoardId: queuedBoard.id
+        })));
+      }
+
+      const runtimePrompt = buildAnchoredRuntimePrompt(finalRuntimePrompt, currentSession.contextAnchors || [], language);
       const result = await desktop.startRuntimeApiThreadTurn({
         conversationId: targetSessionId,
         threadId: runtimeThreadId,
         workspacePath: settings.workspacePath,
         prompt: runtimePrompt,
-        model: selectedModelApiName,
+        model: routing.modelRoute.apiModel,
         mode: permissionMode === "agent" ? "agent" : permissionMode,
         allowShell: runtimeSettings.allowShell,
         settings: runtimeSettings
@@ -4013,8 +4432,29 @@ function App() {
       setStatus({ type: "running" });
     } catch (error) {
       setStatus({ type: "error", message: error instanceof Error ? error.message : t.status.launchFailed });
+    } finally {
+      setTaskBoardBusy(false);
     }
-  }, [activeSessionBusy, agentPrompt, apiKey, applyConversationStore, commitConversationStore, conversationStore, desktop, language, permissionMode, processStreamEnabled, renderTerminalForSession, selectedModelApiName, settings, syncRuntimeDetailAnchors, t]);
+  }, [agentPrompt, apiKey, applyConversationStore, commitConversationStore, conversationStore, desktop, interactionStateBase, language, permissionMode, processStreamEnabled, renderTerminalForSession, routePromptForRun, selectedModelApiName, settings, syncRuntimeDetailAnchors, t]);
+
+  const executeTaskBoard = useCallback(async (board: TaskBoardPlan) => {
+    await sendPrompt({
+      prompt: board.sourcePrompt,
+      taskBoard: board,
+      skipTaskBoard: true,
+      clearComposer: false
+    });
+  }, [sendPrompt]);
+
+  const executeOriginalPrompt = useCallback(async (prompt: string) => {
+    setTaskBoardFallbackPrompt("");
+    setTaskBoardMessage("");
+    await sendPrompt({
+      prompt,
+      skipTaskBoard: true,
+      clearComposer: false
+    });
+  }, [sendPrompt]);
 
   const recallArchivedContext = useCallback(async () => {
     if (!activeRuntimeThreadDetail || activeSessionBusy) return;
@@ -4058,22 +4498,32 @@ function App() {
   }, [sendPrompt]);
 
   const createProjectConversation = useCallback((workspacePath: string) => {
+    const normalizedWorkspacePath = workspacePath.trim();
+    if (!normalizedWorkspacePath) {
+      setStatus({ type: "error", message: t.topbar.noWorkspace });
+      return;
+    }
     const nextMessages = [createNewConversationMessage(language)];
-    const session = createConversationSession(workspacePath, language, nextMessages);
+    const session = createConversationSession(normalizedWorkspacePath, language, nextMessages);
     applyConversationStore(upsertConversationSession(conversationStore, session, language));
     activeSessionIdRef.current = session.id;
     setExpandedProjectIds(() => new Set([session.projectId]));
     renderTerminalForSession(session.id);
-    setSettings((current) => ({ ...current, workspacePath }));
+    setSettings((current) => ({ ...current, workspacePath: normalizedWorkspacePath }));
     setMessages(nextMessages);
     setAgentPrompt("");
+    setTaskBoardBusy(false);
+    setTaskBoardMessage("");
+    setTaskBoardFallbackPrompt("");
+    setLastSkillRoute(null);
+    setLastModelRoute(null);
     setMainView("chat");
     setStatus({ type: "ready" });
-  }, [applyConversationStore, conversationStore, language, renderTerminalForSession]);
+  }, [applyConversationStore, conversationStore, language, renderTerminalForSession, t.topbar.noWorkspace]);
 
   const newConversation = useCallback(() => {
-    createProjectConversation(settings.workspacePath);
-  }, [createProjectConversation, settings.workspacePath]);
+    createProjectConversation(selectedWorkspacePath);
+  }, [createProjectConversation, selectedWorkspacePath]);
 
   const selectProject = useCallback((project: ConversationProject) => {
     if (!project.workspacePath.trim()) return;
@@ -4094,6 +4544,11 @@ function App() {
       renderTerminalForSession(session.id);
     }
     setAgentPrompt("");
+    setTaskBoardBusy(false);
+    setTaskBoardMessage("");
+    setTaskBoardFallbackPrompt("");
+    setLastSkillRoute(null);
+    setLastModelRoute(null);
     setMainView("chat");
   }, [applyConversationStore, conversationStore, expandedProjectIds, language, renderTerminalForSession]);
 
@@ -4106,6 +4561,11 @@ function App() {
     setMessages(session.messages.length ? session.messages : [createWelcomeMessage(language)]);
     renderTerminalForSession(session.id);
     setAgentPrompt("");
+    setTaskBoardBusy(false);
+    setTaskBoardMessage("");
+    setTaskBoardFallbackPrompt("");
+    setLastSkillRoute(null);
+    setLastModelRoute(null);
     setMainView("chat");
     if (session.workspacePath) {
       setSettings((current) => ({ ...current, workspacePath: session.workspacePath }));
@@ -4122,6 +4582,11 @@ function App() {
     setExpandedProjectIds(() => nextSession?.projectId ? new Set([nextSession.projectId]) : new Set<string>());
     setMessages(nextSession?.messages.length ? nextSession.messages : [createWelcomeMessage(language)]);
     renderTerminalForSession(nextSession?.id);
+    setTaskBoardBusy(false);
+    setTaskBoardMessage("");
+    setTaskBoardFallbackPrompt("");
+    setLastSkillRoute(null);
+    setLastModelRoute(null);
     if (nextSession?.workspacePath) {
       setSettings((current) => ({ ...current, workspacePath: nextSession.workspacePath }));
     }
@@ -4335,7 +4800,33 @@ function App() {
   const conversationLayoutClassName = processStreamEnabled
     ? "conversation-layout conversation-layout-with-stream"
     : "conversation-layout conversation-layout-single";
-  const terminalCardClassName = mainView === "terminal" ? "terminal-card terminal-expanded" : "terminal-card stream-output-card";
+  const terminalCardClassName = "terminal-card stream-output-card";
+  const latestHookEvent = desktopHookEvents.at(-1);
+  const routingPanel = lastSkillRoute || lastModelRoute ? (
+    <section className="runtime-routing-panel">
+      <div>
+        <strong>{language === "zh" ? "本轮路由" : "Turn routing"}</strong>
+        <p>{latestHookEvent?.summary || (language === "zh" ? "发送前会按任务选择 Skill 与模型。" : "Skills and model are selected per turn.")}</p>
+      </div>
+      <div className="runtime-routing-chips">
+        <span className="status-chip enabled">
+          {language === "zh" ? `Skill：${lastSkillRoute?.activeSkillIds.length ? lastSkillRoute.activeSkillIds.join(", ") : "无"}` : `Skills: ${lastSkillRoute?.activeSkillIds.length ? lastSkillRoute.activeSkillIds.join(", ") : "none"}`}
+        </span>
+        {lastModelRoute ? (
+          <span className="status-chip">
+            {language === "zh" ? `模型：${lastModelRoute.apiModel} (${lastModelRoute.profile.label})` : `Model: ${lastModelRoute.apiModel} (${lastModelRoute.profile.label})`}
+          </span>
+        ) : null}
+      </div>
+      {lastSkillRoute?.matches.length ? (
+        <div className="runtime-routing-reasons">
+          {lastSkillRoute.matches.map((match) => (
+            <small key={`${match.skillId}-${match.source}`}>{match.skillId}: {match.reason}</small>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  ) : null;
   const renderMcpTestList = (servers: McpServerTest[]) => (
     <section className="mcp-test-list">
       {servers.length === 0 ? <p>{t.mcp.noServers}</p> : null}
@@ -4367,6 +4858,8 @@ function App() {
   const runtimeApiUrl = runtimeApiStatus?.url || (runtimeApiInfo?.port ? `http://127.0.0.1:${runtimeApiInfo.port}` : "");
   const runtimeApiPendingApprovals = runtimeApiStatus?.pendingApprovals || [];
   const runtimeApiPendingUserInputs = runtimeApiStatus?.pendingUserInputs || [];
+  const interactionLabel = interactionPhaseLabel(interactionState, language);
+  const interactionDetail = interactionDetailText(interactionState, language);
   const runtimeApiPanel = (
     <section className={runtimeApiStatus?.connected ? "runtime-api-panel connected" : "runtime-api-panel"}>
       <div className="tool-section-head runtime-api-head">
@@ -4499,10 +4992,13 @@ function App() {
   const parentRuntimeTurns = runtimeOrchestratorSnapshot.turns
     .filter((turn) => turn.status === "queued" || turn.status === "running" || turn.status === "cancelling");
   const visibleRuntimeAgents = runtimeSnapshot.agents;
-  const activeRuntimeCount = parentRuntimeTurns.length + runtimeSnapshot.counts.running;
+  const hasRunningRuntimeSession = runtimeSnapshot.status === "running";
+  const activeRuntimeCount = parentRuntimeTurns.length
+    + runtimeSnapshot.counts.running
+    + (hasRunningRuntimeSession && parentRuntimeTurns.length === 0 && runtimeSnapshot.counts.running === 0 ? 1 : 0);
+  const shouldShowAgentRuntimeBoard = activeRuntimeCount > 0 || visibleRuntimeAgents.length > 0;
   const parentRuntimeLabel = language === "zh" ? "当前运行" : "Current Run";
   const childAgentLabel = language === "zh" ? "子 Agent" : "Child Agents";
-  const waitingChildAgentText = language === "zh" ? "等待上游子 Agent 信号" : "Waiting for upstream child-agent signals";
   const agentRuntimeBoard = (
     <section className="agent-runtime-board" aria-label={t.runtimeAgents.title}>
       <div className="agent-runtime-board-main">
@@ -4535,22 +5031,99 @@ function App() {
           ))}
         </div>
       ) : null}
-      <div className="agent-runtime-active-list">
-        <div className="agent-runtime-section-title">{childAgentLabel}</div>
-        {visibleRuntimeAgents.length > 0 ? (
-          visibleRuntimeAgents.map((agent) => (
+      {visibleRuntimeAgents.length > 0 ? (
+        <div className="agent-runtime-active-list">
+          <div className="agent-runtime-section-title">{childAgentLabel}</div>
+          {visibleRuntimeAgents.map((agent) => (
             <article key={agent.id}>
               <Bot size={14} aria-hidden />
-              <span>{agent.name}</span>
+              <span>
+                {agent.name}
+                <small>{agent.typeLabel || agent.type || "Custom"} · {agent.classificationSource === "observed" ? (language === "zh" ? "观察到" : "observed") : (language === "zh" ? "已确认" : "confirmed")}</small>
+              </span>
               <b>{runtimeStatusText(agent.status, language)}</b>
             </article>
-          ))
-        ) : (
-          <p className="agent-runtime-empty">{parentRuntimeTurns.length > 0 ? waitingChildAgentText : t.runtimeAgents.noAgents}</p>
-        )}
-      </div>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
+  const taskBoardPanel = activeTaskBoardWithRuntimeStatus || taskBoardMessage || taskBoardFallbackPrompt ? (
+    <section className="task-board-panel" aria-label={language === "zh" ? "任务拆解工作台" : "Task decomposition board"}>
+      <div className="task-board-head">
+        <div>
+          <span className="task-board-eyebrow">{language === "zh" ? "子 Agent 任务拆解" : "Sub-agent task board"}</span>
+          <h3>{language === "zh" ? "任务拆解工作台" : "Task Board"}</h3>
+          <p>{activeTaskBoardWithRuntimeStatus
+            ? (language === "zh"
+              ? `已拆解 ${activeTaskBoardWithRuntimeStatus.items.length} 个任务，模型 ${activeTaskBoardWithRuntimeStatus.model}`
+              : `${activeTaskBoardWithRuntimeStatus.items.length} tasks prepared with ${activeTaskBoardWithRuntimeStatus.model}`)
+            : taskBoardMessage}</p>
+        </div>
+        <div className="task-board-actions">
+          {activeTaskBoardWithRuntimeStatus ? (
+            <>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void executeTaskBoard(activeTaskBoardWithRuntimeStatus)}
+                disabled={taskBoardBusy || activeSessionBusy}
+              >
+                <Bot size={15} aria-hidden />
+                {language === "zh" ? "执行任务板" : "Execute Board"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void executeOriginalPrompt(activeTaskBoardWithRuntimeStatus.sourcePrompt)}
+                disabled={taskBoardBusy || activeSessionBusy}
+              >
+                {language === "zh" ? "直接执行原任务" : "Run Original"}
+              </button>
+            </>
+          ) : taskBoardFallbackPrompt ? (
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void executeOriginalPrompt(taskBoardFallbackPrompt)}
+              disabled={taskBoardBusy || activeSessionBusy}
+            >
+              {language === "zh" ? "直接执行原任务" : "Run Original"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {taskBoardMessage && activeTaskBoardWithRuntimeStatus ? (
+        <p className="task-board-message">{taskBoardMessage}</p>
+      ) : null}
+      {activeTaskBoardWithRuntimeStatus?.warnings.length ? (
+        <div className="task-board-warnings">
+          {activeTaskBoardWithRuntimeStatus.warnings.map((warning) => <span key={warning}>{warning}</span>)}
+        </div>
+      ) : null}
+      {activeTaskBoardWithRuntimeStatus ? (
+        <div className="task-board-grid">
+          {activeTaskBoardWithRuntimeStatus.items.map((item) => (
+            <article key={item.id} className={`task-board-card status-${item.status}`}>
+              <div className="task-board-card-top">
+                <span className="task-board-role">{taskBoardRoleText(item.agentRole, language)}</span>
+                <span className={`task-board-status status-${item.status}`}>{taskBoardStatusText(item.status, language)}</span>
+              </div>
+              <strong>{item.title}</strong>
+              <p>{item.goal}</p>
+              <div className="task-board-meta">
+                <span>{language === "zh" ? "依赖" : "Deps"}: {item.dependencies.length ? item.dependencies.join(", ") : "-"}</span>
+                <span>{language === "zh" ? "范围" : "Areas"}: {item.targetAreas.join(", ")}</span>
+              </div>
+              <ul>
+                {item.acceptance.slice(0, 3).map((check) => <li key={check}>{check}</li>)}
+              </ul>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  ) : null;
   const terminalPanel = (
     <section className={terminalCardClassName}>
       <div className="terminal-toolbar">
@@ -4560,7 +5133,7 @@ function App() {
             <TerminalSquare size={15} aria-hidden />
             {t.terminal.streamTitle}
           </span>
-          <small>{statusText}</small>
+          <small>{statusText} / {interactionLabel}</small>
         </div>
         <div className="quick-row terminal-actions">
           {activeSessionBusy ? (
@@ -4585,7 +5158,7 @@ function App() {
         </div>
       </div>
       <div ref={terminalHostRef} className="terminal-host" />
-      {agentRuntimeBoard}
+      {shouldShowAgentRuntimeBoard ? agentRuntimeBoard : null}
     </section>
   );
 
@@ -5026,7 +5599,13 @@ function App() {
           </div>
         </section>
 
-        <button type="button" className="new-chat-button" onClick={newConversation}>
+        <button
+          type="button"
+          className="new-chat-button"
+          title={selectedWorkspacePath.trim() ? t.sidebar.newChat : t.topbar.noWorkspace}
+          onClick={newConversation}
+          disabled={!selectedWorkspacePath.trim()}
+        >
           <Plus size={17} aria-hidden />
           {t.sidebar.newChat}
         </button>
@@ -5315,8 +5894,11 @@ function App() {
 	                      ) : null}
 	                    </div>
 	                  </section>
-	                  {activeRuntimeThreadItems.map((item) => {
-	                  const isUser = item.kind === "user_message";
+	                  {taskBoardPanel}
+	                  {routingPanel}
+	                  {activeRuntimeTimeline.mainEntries.map((entry) => {
+	                  const item = entry.item as RuntimeApiItemRecord;
+	                  const isUser = entry.kind === "user";
 	                  const isRunning = item.status === "in_progress";
 	                  const requestId = runtimeItemRequestId(item);
                   const requestQuestions = Array.isArray(item.metadata?.request?.questions)
@@ -5326,9 +5908,9 @@ function App() {
                   const answeredSummary = Array.isArray(item.metadata?.response?.answers)
                     ? (item.metadata.response.answers as RuntimeApiUserInputAnswer[]).map((answer) => answer.label).join(", ")
                     : "";
-                  const inlineTitle = runtimeItemTitle(item);
+                  const inlineTitle = runtimeTimelineTitle(entry, language);
 	                  return (
-                    <article key={item.id} className={`message-row ${isUser ? "user" : "assistant"} ${isRunning ? "running-reply" : ""}`}>
+                    <article key={entry.id} className={`message-row ${isUser ? "user" : "assistant"} ${isRunning ? "running-reply" : ""}`}>
                       <div className="message-avatar">
                         {isUser ? (
                           <Code2 size={16} aria-hidden />
@@ -5399,10 +5981,31 @@ function App() {
                         ) : null}
                       </div>
                     </article>
-	                  );
-	                })}
-	                </>
-	              ) : messages.map((message) => {
+		                  );
+		                })}
+	                  {(activeRuntimeTimeline.actions.length > 0 || activeRuntimeTimeline.toolCalls.length > 0) ? (
+	                    <details className="runtime-detail-group">
+	                      <summary>
+	                        <TerminalSquare size={15} aria-hidden />
+	                        <span>{language === "zh" ? "执行细节" : "Run details"}</span>
+	                        <small>{activeRuntimeTimeline.actions.length + activeRuntimeTimeline.toolCalls.length}</small>
+	                      </summary>
+	                      <div className="runtime-detail-list">
+	                        {[...activeRuntimeTimeline.actions, ...activeRuntimeTimeline.toolCalls].map((entry) => (
+	                          <article key={`detail-${entry.id}`}>
+	                            <strong>{runtimeTimelineTitle(entry, language)}</strong>
+	                            <p>{entry.text || entry.sourceKind}</p>
+	                          </article>
+	                        ))}
+	                      </div>
+	                    </details>
+	                  ) : null}
+		                </>
+		              ) : (
+		                <>
+		                  {taskBoardPanel}
+		                  {routingPanel}
+		                  {messages.map((message) => {
                   const isRunningReply = message.role === "assistant" && activeSessionRunningReplyIds.has(message.id);
                   return (
                   <article key={message.id} className={`message-row ${message.role} ${isRunningReply ? "running-reply" : ""}`}>
@@ -5422,7 +6025,9 @@ function App() {
                     </div>
                   </article>
                   );
-                })
+                })}
+		                </>
+		              )
             ) : null}
 
             {mainView === "tools" ? (
@@ -5445,16 +6050,16 @@ function App() {
                 {toolPage === "overview" ? (
                   <>
                 <div className="dashboard-grid">
-                  <button type="button" className="metric-card" onClick={() => setToolPage("mcp")}>
+                  <article className="metric-card">
                     <Plug size={20} aria-hidden />
                     <strong>{enabledMcpCount}</strong>
                     <span>{t.tools.enabledMcp}</span>
-                  </button>
-                  <button type="button" className="metric-card" onClick={() => setToolPage("skills")}>
+                  </article>
+                  <article className="metric-card">
                     <BookOpen size={20} aria-hidden />
                     <strong>{enabledSkillCount}</strong>
                     <span>{t.tools.enabledSkills}</span>
-                  </button>
+                  </article>
                   <article className="metric-card">
                     <ShieldCheck size={20} aria-hidden />
                     <strong>{mcpPresets.length}</strong>
@@ -5481,11 +6086,9 @@ function App() {
                     const Icon = iconForMcp(preset.id);
                     const presetText = getMcpText(preset, language);
                     return (
-                      <button
-                        type="button"
+                      <article
                         key={preset.id}
                         className={enabled ? `tool-card enabled ${preset.accent}` : `tool-card ${preset.accent}`}
-                        onClick={() => setToolPage("mcp")}
                       >
                         <div className="tool-card-top">
                           <span className="preset-icon"><Icon size={18} aria-hidden /></span>
@@ -5498,7 +6101,7 @@ function App() {
                           <span>{formatDownloads(preset.downloads, language)}</span>
                           <span>{t.auth[preset.auth]}</span>
                         </div>
-                      </button>
+                      </article>
                     );
                   })}
                 </div>
@@ -5519,11 +6122,9 @@ function App() {
                     const enabled = settings.enabledSkills.includes(skill.id);
                     const Icon = iconForSkill(skill);
                     return (
-                      <button
-                        type="button"
+                      <article
                         key={skill.id}
                         className={enabled ? "skill-card enabled" : "skill-card"}
-                        onClick={() => setToolPage("skills")}
                       >
                         <span className="preset-icon"><Icon size={18} aria-hidden /></span>
                         <strong>{skill.name}</strong>
@@ -5532,7 +6133,7 @@ function App() {
                           <span>{skill.category}</span>
                           {skill.tools.map((tool) => <span key={tool}>{tool}</span>)}
                         </div>
-                      </button>
+                      </article>
                     );
                   })}
                 </div>
@@ -5545,7 +6146,7 @@ function App() {
 	            ) : null}
 	            {mainView === "tasks" ? scheduledTasksPage : null}
 		            </div>
-            {(mainView === "chat" && processStreamEnabled) || mainView === "terminal" ? terminalPanel : null}
+            {mainView === "chat" && processStreamEnabled ? terminalPanel : null}
           </div>
         </div>
 
@@ -5601,7 +6202,14 @@ function App() {
               </span>
             </label>
           </div>
-          <div className="composer-input">
+          <div className={`interaction-state-bar ${interactionState.severity} phase-${interactionState.phase}`} role="status">
+            <span>
+              <span className="interaction-state-dot" aria-hidden />
+              <strong>{interactionLabel}</strong>
+            </span>
+            <small>{interactionDetail}</small>
+          </div>
+          <div className={interactionBlocksNewPrompt ? "composer-input interaction-blocked" : "composer-input"}>
             <textarea
               value={agentPrompt}
               onChange={(event) => setAgentPrompt(event.target.value)}
@@ -5613,12 +6221,12 @@ function App() {
                     : t.composer.execPlaceholder}
               rows={2}
             />
-            {activeSessionBusy ? (
+            {composerCanStop ? (
               <button type="button" className="send-button stop-button" title={t.composer.stop} onClick={stop}>
                 <Square size={18} aria-hidden />
               </button>
             ) : (
-              <button type="button" className="send-button" onClick={() => void sendPrompt()} disabled={activeSessionBusy || !agentPrompt.trim()}>
+              <button type="button" className="send-button" onClick={() => void sendPrompt()} disabled={!composerCanSubmit}>
                 <Send size={18} aria-hidden />
               </button>
             )}
@@ -6301,6 +6909,35 @@ function App() {
                 </span>
               </label>
               <small className="field-hint">{t.settings.thinkingModeHint}</small>
+              <label>
+                {t.settings.skillRoutingMode}
+                <span className="select-wrap">
+                  <select
+                    value={settings.skillRoutingMode}
+                    onChange={(event) => updateSetting("skillRoutingMode", event.target.value as SkillRoutingMode)}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="manual">Manual</option>
+                    <option value="all">All</option>
+                  </select>
+                  <ChevronDown size={14} aria-hidden />
+                </span>
+              </label>
+              <small className="field-hint">{t.settings.skillRoutingModeHint}</small>
+              <label>
+                {t.settings.modelRoutingMode}
+                <span className="select-wrap">
+                  <select
+                    value={settings.modelRoutingMode}
+                    onChange={(event) => updateSetting("modelRoutingMode", event.target.value as ModelRoutingMode)}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                  <ChevronDown size={14} aria-hidden />
+                </span>
+              </label>
+              <small className="field-hint">{t.settings.modelRoutingModeHint}</small>
               <details className="advanced-settings">
                 <summary>
                   <span>{t.settings.advancedRuntime}</span>

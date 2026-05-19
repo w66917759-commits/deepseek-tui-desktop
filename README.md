@@ -78,6 +78,8 @@ The CLI is fully functional on its own. The desktop layer adds:
 - **Runtime picker** — Bundled, PATH, or custom `deepseek` binary with version detection.
 - **Top-level view switch** — `对话` (chat), `工具` (tools — MCP/Skills management), `定时任务` (scheduled tasks), `终端` (focused terminal output). Each surface has its own purpose without crowding the chat view.
 - **Permission modes** — `Plan` (non-mutating analysis), `Agent` (full tool access), `YOLO` (auto-approved). Mirrors the upstream mode names.
+- **Interaction state** — Long-running turns now surface explicit states for routing, queueing, streaming output, waiting for user input, waiting for approval, stale-running tasks, missing setup, and selected MCP servers that are not callable.
+- **Task decomposition workbench** — Complex prompts that ask for decomposition, sub-agents, delegation, or parallel work route through Superpowers and a planner profile first. The app generates a read-only task board, shows roles, dependencies, target areas, acceptance criteria, and runtime-linked status, then lets the user execute the board or run the original prompt directly.
 - **Environment wiring** — `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_PROVIDER`, `DEEPSEEK_MCP_CONFIG`, `DEEPSEEK_SKILLS_DIR`, `DEEPSEEK_ALLOW_SHELL`, `DEEPSEEK_MAX_SUBAGENTS`.
 
 ### Skills Management
@@ -164,9 +166,24 @@ Notes:
 - It auto-discovers `AuthKey_*.p8` from `/Users/west/project/appkey` unless `APPLE_API_KEY_PATH` is set.
 - It auto-discovers the first `.p12` signing certificate from `/Users/west/project/appkey` unless `CSC_LINK` is set.
 - `CSC_KEY_PASSWORD` is required so the release script can create a temporary signing keychain, import the Developer ID certificate chain, and run `codesign` / `notarytool` non-interactively.
-- The release script automatically downloads the matching Apple Developer ID intermediate certificate from `apple.com/certificateauthority` based on the issuer of your local `developerID_application.cer`.
+- The release script automatically downloads the Apple Root CA G3 certificate and the matching Apple Developer ID intermediate certificate from `apple.com/certificateauthority` based on the issuer of your local `developerID_application.cer`.
+- The release script uses App Store Connect credentials only for its own `notarytool` step and strips those variables from the Electron Builder subprocess, so Electron Builder does not attempt a separate app-level notarization.
 - If needed, you can override `APPLE_API_KEY_ID` explicitly; otherwise it is parsed from the `AuthKey_*.p8` filename.
 - The official flow rebuilds the app, signs the DMG, submits it to Apple notarization, staples the ticket, then validates with `codesign`, `spctl`, and `hdiutil`.
+
+Current official macOS release:
+
+| Field | Value |
+|---|---|
+| Version | `0.1.9` |
+| GitHub release | https://github.com/w66917759-commits/deepseek-tui-desktop/releases/tag/v0.1.9 |
+| DMG | `release/DeepSeek TUI Desktop-0.1.9-arm64.dmg` |
+| Blockmap | `release/DeepSeek TUI Desktop-0.1.9-arm64.dmg.blockmap` |
+| DMG SHA256 | `ecadde04d824a39c5128d2e240ab09d2eb1dc1c58bcd7ca149c0a7cc632a82d1` |
+| Blockmap SHA256 | `c21766ed6547b4a7411761f50912cf560dd42f2d1a0c3eb5a653b5d9171769bb` |
+| Signing | `Developer ID Application: chen He (3ZN7R3Z947)` |
+| Notarization | Accepted and stapled on 2026-05-19 |
+| Verification | `codesign`, `xcrun stapler validate`, `spctl -t install`, mounted-app `spctl -t execute`, and `hdiutil verify` |
 
 ### Windows Installer
 
@@ -228,7 +245,7 @@ Full endpoint documentation and phone app flow in [`docs/mobile-remote-api.md`](
 - **Frontend**: [React](https://react.dev/) 18 + [TypeScript](https://www.typescriptlang.org/) + [Vite](https://vitejs.dev/) 6
 - **Terminal**: [xterm.js](https://xtermjs.org/) 5 + [node-pty](https://github.com/tyriar/node-pty)
 - **Icons**: [Lucide React](https://lucide.dev/)
-- **CLI agent**: [`deepseek-tui`](https://www.npmjs.com/package/deepseek-tui) 0.8.21
+- **CLI agent**: [`deepseek-tui`](https://www.npmjs.com/package/deepseek-tui) 0.8.36
 - **Packaging**: [electron-builder](https://www.electron.build/) 25 (macOS DMG, Windows NSIS)
 
 ## License

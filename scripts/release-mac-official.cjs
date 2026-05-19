@@ -11,6 +11,7 @@ const DEFAULT_ARCH = "arm64";
 const DEFAULT_KEYCHAIN_NAME = "deepseek-release-signing.keychain-db";
 const DEFAULT_KEYCHAIN_PASSWORD = "deepseek-release-signing";
 const DEFAULT_MAX_BUFFER = 64 * 1024 * 1024;
+const APPLE_ROOT_CA_G3_URL = "https://www.apple.com/certificateauthority/AppleRootCA-G3.cer";
 const DEVELOPER_ID_INTERMEDIATE_URLS = {
   G1: "https://www.apple.com/certificateauthority/DeveloperIDCA.cer",
   G2: "https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer"
@@ -59,6 +60,12 @@ function detectDeveloperIdIntermediateUrl(issuerLine) {
   return /\bOU=G2\b/.test(String(issuerLine || ""))
     ? DEVELOPER_ID_INTERMEDIATE_URLS.G2
     : DEVELOPER_ID_INTERMEDIATE_URLS.G1;
+}
+
+function downloadAppleCertificate(url, cwd) {
+  const targetPath = path.join(os.tmpdir(), path.basename(new URL(url).pathname));
+  run("curl", ["-fsSL", url, "-o", targetPath], { cwd });
+  return targetPath;
 }
 
 function resolveOfficialMacReleaseConfig(options = {}) {
@@ -185,6 +192,27 @@ function buildDmgCodesignArgs(config) {
   ];
 }
 
+function buildElectronBuilderEnv(config) {
+  const env = {
+    ...process.env,
+    DEEPSEEK_TUI_MAC_SIGN_IDENTITY: config.identity,
+    DEEPSEEK_TUI_MAC_SIGN_KEYCHAIN: config.releaseKeychain.path
+  };
+
+  // The release script performs DMG notarization after electron-builder has
+  // created the artifact. Passing App Store Connect env vars into
+  // electron-builder makes it try its own app-level notarization first.
+  delete env.APPLE_API_KEY;
+  delete env.APPLE_API_KEY_ID;
+  delete env.APPLE_API_KEY_PATH;
+  delete env.APPLE_API_ISSUER;
+  delete env.APPLE_ID;
+  delete env.APPLE_APP_SPECIFIC_PASSWORD;
+  delete env.APPLE_TEAM_ID;
+
+  return env;
+}
+
 function buildNotarySubmitArgs(config) {
   return [
     "notarytool",
@@ -213,7 +241,11 @@ function run(command, args, options = {}) {
   if (result.status !== 0) {
     const stderr = String(result.stderr || "").trim();
     const stdout = String(result.stdout || "").trim();
-    throw new Error(`${command} ${args.join(" ")} failed\n${stderr || stdout || "Unknown error"}`);
+    const detail = [
+      stderr ? `stderr:\n${stderr}` : "",
+      stdout ? `stdout:\n${stdout}` : ""
+    ].filter(Boolean).join("\n\n");
+    throw new Error(`${command} ${args.join(" ")} failed\n${detail || "Unknown error"}`);
   }
   return result;
 }
@@ -252,9 +284,7 @@ function downloadIntermediateCertificate(config) {
   );
   const issuerLine = String(issuerResult.stdout || "").trim();
   const url = detectDeveloperIdIntermediateUrl(issuerLine);
-  const targetPath = path.join(os.tmpdir(), path.basename(new URL(url).pathname));
-
-  run("curl", ["-fsSL", url, "-o", targetPath], { cwd: config.cwd });
+  const targetPath = downloadAppleCertificate(url, config.cwd);
 
   return {
     issuerLine,
@@ -270,11 +300,13 @@ function setupSigningKeychain(config) {
   const keychainPassword = config.releaseKeychain.password;
   const searchList = buildUserKeychainList(config, previousUserKeychains);
   const intermediateCertificate = downloadIntermediateCertificate(config);
+  const appleRootCertificatePath = downloadAppleCertificate(APPLE_ROOT_CA_G3_URL, config.cwd);
 
   tryRun("security", ["delete-keychain", keychainPath], { cwd: config.cwd });
   run("security", ["create-keychain", "-p", keychainPassword, keychainPath], { cwd: config.cwd });
   run("security", ["set-keychain-settings", "-lut", "21600", keychainPath], { cwd: config.cwd });
   run("security", ["unlock-keychain", "-p", keychainPassword, keychainPath], { cwd: config.cwd });
+  run("security", ["import", appleRootCertificatePath, "-k", keychainPath, "-T", "/usr/bin/codesign", "-T", "/usr/bin/security"], { cwd: config.cwd });
   run("security", ["import", intermediateCertificate.path, "-k", keychainPath, "-T", "/usr/bin/codesign", "-T", "/usr/bin/security"], { cwd: config.cwd });
   run("security", ["import", config.signingCertificate.cerPath, "-k", keychainPath, "-T", "/usr/bin/codesign", "-T", "/usr/bin/security"], { cwd: config.cwd });
   run("security", ["import", config.signingCertificate.p12Path, "-k", keychainPath, "-P", config.signingCertificate.p12Password, "-T", "/usr/bin/codesign", "-T", "/usr/bin/security"], { cwd: config.cwd });
@@ -296,11 +328,7 @@ function setupSigningKeychain(config) {
 function notarizeOfficialMacRelease(options = {}) {
   const config = resolveOfficialMacReleaseConfig(options);
   const keychainSession = setupSigningKeychain(config);
-  const env = {
-    ...process.env,
-    DEEPSEEK_TUI_MAC_SIGN_IDENTITY: config.identity,
-    DEEPSEEK_TUI_MAC_SIGN_KEYCHAIN: config.releaseKeychain.path
-  };
+  const env = buildElectronBuilderEnv(config);
 
   try {
     run("npm", ["run", "dist:mac"], { cwd: config.cwd, env });
@@ -333,10 +361,41 @@ function notarizeOfficialMacRelease(options = {}) {
   }
 }
 
+function redactOfficialMacReleaseResult(result) {
+  const config = result && result.config ? result.config : {};
+  return {
+    ...result,
+    config: {
+      cwd: config.cwd,
+      version: config.version,
+      identity: config.identity,
+      productName: config.productName,
+      arch: config.arch,
+      releaseDir: config.releaseDir,
+      appPath: config.appPath,
+      dmgPath: config.dmgPath,
+      appleApi: {
+        keyPath: config.appleApi && config.appleApi.keyPath ? "[redacted]" : undefined,
+        keyId: config.appleApi && config.appleApi.keyId ? "[redacted]" : undefined,
+        issuer: config.appleApi && config.appleApi.issuer ? "[redacted]" : undefined
+      },
+      signingCertificate: {
+        p12Path: config.signingCertificate && config.signingCertificate.p12Path ? "[redacted]" : undefined,
+        cerPath: config.signingCertificate && config.signingCertificate.cerPath ? "[redacted]" : undefined,
+        p12Password: config.signingCertificate && config.signingCertificate.p12Password ? "[redacted]" : undefined
+      },
+      releaseKeychain: {
+        path: config.releaseKeychain && config.releaseKeychain.path ? "[redacted]" : undefined,
+        password: config.releaseKeychain && config.releaseKeychain.password ? "[redacted]" : undefined
+      }
+    }
+  };
+}
+
 function main() {
   const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
   const result = notarizeOfficialMacRelease({ version: packageJson.version });
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(redactOfficialMacReleaseResult(result), null, 2)}\n`);
 }
 
 if (require.main === module) {
@@ -350,6 +409,7 @@ if (require.main === module) {
 
 module.exports = {
   buildDmgCodesignArgs,
+  buildElectronBuilderEnv,
   buildNotarySubmitArgs,
   buildUserKeychainList,
   detectAppleApiKeyId,
@@ -359,5 +419,6 @@ module.exports = {
   findSigningCertificatePath,
   notarizeOfficialMacRelease,
   parseSecurityList,
+  redactOfficialMacReleaseResult,
   resolveOfficialMacReleaseConfig
 };

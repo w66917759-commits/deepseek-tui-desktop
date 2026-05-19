@@ -466,6 +466,8 @@ function defaultSettings() {
     maxSubagents: DEFAULT_MAX_SUBAGENTS,
     processStreamEnabled: true,
     thinkingMode: "max",
+    skillRoutingMode: "auto",
+    modelRoutingMode: "auto",
     harnessEnabled: false,
     launchAction: "tui",
     rememberWorkspace: true,
@@ -576,6 +578,8 @@ function sanitizeSettings(settings) {
   safeSettings.processStreamEnabled = safeSettings.processStreamEnabled ?? true;
   safeSettings.processStreamEnabled = safeSettings.processStreamEnabled !== false;
   safeSettings.thinkingMode = normalizeDeepSeekThinkingMode(safeSettings.thinkingMode);
+  safeSettings.skillRoutingMode = ["auto", "manual", "all"].includes(safeSettings.skillRoutingMode) ? safeSettings.skillRoutingMode : "auto";
+  safeSettings.modelRoutingMode = safeSettings.modelRoutingMode === "manual" ? "manual" : "auto";
   safeSettings.mobileRemoteControlEnabled = Boolean(safeSettings.mobileRemoteControlEnabled);
   safeSettings.updatePushEnabled = Boolean(safeSettings.updatePushEnabled);
   safeSettings.layeredContextEnabled = safeSettings.layeredContextEnabled !== false;

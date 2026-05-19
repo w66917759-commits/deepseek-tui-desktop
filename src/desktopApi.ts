@@ -16,6 +16,8 @@ const previewSettings: DesktopSettings = {
   maxSubagents: 10,
   processStreamEnabled: true,
   thinkingMode: "max",
+  skillRoutingMode: "auto",
+  modelRoutingMode: "auto",
   harnessEnabled: false,
   launchAction: "tui",
   rememberWorkspace: true,
@@ -229,7 +231,7 @@ let previewRuntimeApiStatus: RuntimeApiStatus = {
     bind_host: "127.0.0.1",
     port: 7878,
     auth_required: true,
-    version: "0.8.21"
+    version: "0.8.36"
   },
   health: {
     status: "ok",
@@ -976,13 +978,54 @@ export function createPreviewBridge(): Window["deepseekDesktop"] {
 	        started_at: now,
 	        ended_at: now
 	      };
+	      const previewAssistantDetail = /task decomposition planner/i.test(payload.prompt)
+	        ? [
+	          "```json",
+	          JSON.stringify({
+	            items: [
+	              {
+	                id: "inspect-flow",
+	                title: "检查执行入口",
+	                goal: "确认当前发送、路由和运行时调用入口。",
+	                agentRole: "explorer",
+	                dependencies: [],
+	                targetAreas: ["src/App.tsx", "src/skillRouter.ts"],
+	                acceptance: ["找到任务进入 runtime 前的路由位置"],
+	                status: "draft"
+	              },
+	              {
+	                id: "implement-board",
+	                title: "实现任务板",
+	                goal: "接入任务板预览、执行 prompt 和状态展示。",
+	                agentRole: "worker",
+	                dependencies: ["inspect-flow"],
+	                targetAreas: ["src/App.tsx", "src/taskDecomposition.ts"],
+	                acceptance: ["复杂任务先显示任务板"],
+	                status: "draft"
+	              },
+	              {
+	                id: "verify-board",
+	                title: "验证任务板",
+	                goal: "确认普通任务不被拦截，复杂任务可按任务板执行。",
+	                agentRole: "tester",
+	                dependencies: ["implement-board"],
+	                targetAreas: ["test/taskDecomposition.test.cjs"],
+	                acceptance: ["路由、解析和执行 prompt 测试通过"],
+	                status: "draft"
+	              }
+	            ],
+	            warnings: ["Browser preview uses synthetic task-board data."]
+	          }, null, 2),
+	          "```"
+	        ].join("\n")
+	        : `Preview runtime reply for: ${payload.prompt}`;
 	      const assistantItem: RuntimeApiItemRecord = {
 	        id: assistantItemId,
 	        turn_id: turnId,
 	        kind: "agent_message",
 	        status: "completed",
 	        summary: "Preview reply",
-	        detail: `Preview runtime reply for: ${payload.prompt}`,
+	        detail: previewAssistantDetail,
 	        metadata: null,
 	        artifact_refs: [],
 	        started_at: now,

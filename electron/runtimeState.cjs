@@ -1,4 +1,5 @@
 const { EventEmitter } = require("events");
+const { normalizeAgentCatalogRecord } = require("./agentCatalog.cjs");
 
 const DEFAULT_MAX_EVENTS = 80;
 
@@ -178,7 +179,8 @@ class DeepSeekRuntimeState extends EventEmitter {
         id: agent.id || agent.name,
         name: agent.name || agent.id,
         status: agent.status,
-        summary: agent.summary || agent.detail || agent.message || ""
+        summary: agent.summary || agent.detail || agent.message || "",
+        type: agent.type || agent.agentType || agent.role || ""
       })), "runtime-api");
     }
 
@@ -203,11 +205,15 @@ class DeepSeekRuntimeState extends EventEmitter {
     for (const candidate of nextAgents) {
       const id = stableAgentId(candidate.id || candidate.name);
       const previous = existing.get(id);
+      const normalized = normalizeAgentCatalogRecord(candidate, source);
       existing.set(id, {
         id,
         name: String(candidate.name || candidate.id || id),
         status: runtimeStatus(candidate.status),
         summary: String(candidate.summary || ""),
+        type: normalized.type,
+        typeLabel: normalized.typeLabel,
+        classificationSource: normalized.classificationSource,
         source,
         updatedAt: timestamp,
         createdAt: previous?.createdAt || timestamp
