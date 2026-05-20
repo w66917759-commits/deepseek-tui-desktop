@@ -1,9 +1,15 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { tmpdir } = require("node:os");
+const path = require("node:path");
 
 const {
   applyRuntimeThreadEventSnapshot,
-  deriveRuntimeCapabilityState
+  deriveRuntimeCapabilityState,
+  extractRuntimeItemParseFailurePath,
+  isRuntimeItemPath,
+  quarantineMalformedRuntimeItem
 } = require("../electron/runtimeApiService.cjs");
 
 function sampleDetail() {
@@ -159,4 +165,32 @@ test("runtime capability state separates selected from callable and keeps failur
       reason: ""
     }
   );
+});
+
+test("runtime item parse repair only accepts task item files and quarantines them", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "deepseek-runtime-items-"));
+  try {
+    const itemsDir = path.join(root, "tasks", "runtime", "items");
+    mkdirSync(itemsDir, { recursive: true });
+    const itemPath = path.join(itemsDir, "item_bad123.json");
+    writeFileSync(itemPath, "{\"broken\": true}", "utf8");
+
+    const error = new Error(`Failed to parse ${itemPath}`);
+    assert.equal(extractRuntimeItemParseFailurePath(error), itemPath);
+    assert.equal(isRuntimeItemPath(itemPath), true);
+    assert.equal(isRuntimeItemPath(path.join(root, "tasks", "runtime", "other", "item_bad123.json")), false);
+    assert.equal(
+      extractRuntimeItemParseFailurePath(new Error(`Failed to parse ${path.join(root, "item_bad123.json")}`)),
+      ""
+    );
+
+    const result = quarantineMalformedRuntimeItem(itemPath);
+    assert.equal(result.source, itemPath);
+    assert.equal(existsSync(itemPath), false);
+    assert.equal(existsSync(result.target), true);
+    assert.equal(path.basename(path.dirname(result.target)), "items.invalid");
+    assert.equal(readFileSync(result.target, "utf8"), "{\"broken\": true}");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

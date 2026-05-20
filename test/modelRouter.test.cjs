@@ -1,22 +1,9 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-const ts = require("typescript");
+const { loadTsModule } = require("./loadTsModule.cjs");
 
 function loadModelRouter() {
-  const sourcePath = path.join(__dirname, "..", "src", "modelRouter.ts");
-  const source = fs.readFileSync(sourcePath, "utf8");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020
-    }
-  });
-  const module = { exports: {} };
-  const fn = new Function("exports", "module", "require", outputText);
-  fn(module.exports, module, require);
-  return module.exports;
+  return loadTsModule("src/modelRouter.ts");
 }
 
 test("simple interactive prompts route to V4 Flash", () => {
@@ -84,4 +71,22 @@ test("sub-agent decomposition prompts route to V4 Pro planner profile", () => {
 
   assert.equal(decision.profile.id, "planner");
   assert.equal(decision.apiModel, "deepseek-v4-pro");
+});
+
+test("route intents drive review and translation model profiles", () => {
+  const { routeModelForPrompt } = loadModelRouter();
+  assert.equal(routeModelForPrompt({
+    prompt: "检查这个项目的中文界面翻译是否准备",
+    permissionMode: "agent",
+    settings: { provider: "deepseek", model: "deepseek-v4-flash", modelRoutingMode: "auto" },
+    activeSkillIds: ["superpowers"],
+    routeIntents: [{ id: "localization_review", score: 84, reason: "test", signals: [] }]
+  }).profile.id, "reviewer");
+  assert.equal(routeModelForPrompt({
+    prompt: "把这段英文翻译成中文",
+    permissionMode: "agent",
+    settings: { provider: "deepseek", model: "deepseek-v4-pro", modelRoutingMode: "auto" },
+    activeSkillIds: [],
+    routeIntents: [{ id: "translation_chat", score: 74, reason: "test", signals: [] }]
+  }).profile.id, "interactive");
 });

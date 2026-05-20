@@ -11,6 +11,7 @@ const MAX_PAIRING_ATTEMPTS = 20;
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
 const PAIRING_ATTEMPT_TTL_MS = 10 * 60 * 1000;
 const VALID_ACTIONS = new Set(["tui", "continue", "doctor", "setup", "mcp-init", "sessions", "exec", "plan"]);
+const DEFAULT_RELAY_URL = "https://deepseektuidesktop.cn";
 
 function now() {
   return new Date().toISOString();
@@ -38,6 +39,22 @@ function hashSecret(secret) {
 
 function normalizeAccountId(value) {
   return trimString(value, 160).trim().toLowerCase();
+}
+
+function normalizeRelayUrl(value) {
+  const trimmed = String(value || DEFAULT_RELAY_URL).trim().replace(/\/+$/, "");
+  if (!trimmed) return DEFAULT_RELAY_URL;
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  const url = new URL(withProtocol);
+  return url.origin + url.pathname.replace(/\/+$/, "");
+}
+
+function relayWebSocketUrl(relayUrl, desktopId, secret) {
+  const endpoint = new URL("/desktop/connect", normalizeRelayUrl(relayUrl));
+  endpoint.protocol = endpoint.protocol === "http:" ? "ws:" : "wss:";
+  endpoint.searchParams.set("desktopId", desktopId);
+  endpoint.searchParams.set("secret", secret);
+  return endpoint.toString();
 }
 
 function safeEqual(left, right) {
@@ -109,9 +126,12 @@ function normalizeAction(action) {
 function defaultAuthState() {
   return {
     desktopId: randomId("desktop"),
+    activePairing: null,
     account: null,
     pairing: null,
-    devices: []
+    devices: [],
+    relaySecret: createAuthToken(),
+    lastRelayState: null
   };
 }
 
@@ -128,6 +148,17 @@ class DesktopRemoteBridge {
     this.lastUpdateNotice = null;
     this.authState = this.readAuthState();
     this.pairingAttempts = new Map();
+    this.relay = {
+      ws: null,
+      reconnectTimer: null,
+      url: "",
+      connected: false,
+      sessionId: "",
+      lastConnectedAt: "",
+      lastError: "",
+      reconnectAttempts: 0,
+      shouldReconnect: false
+    };
   }
 
   authFilePath() {
@@ -138,10 +169,14 @@ class DesktopRemoteBridge {
     try {
       const raw = fs.readFileSync(this.authFilePath(), "utf8");
       const parsed = JSON.parse(raw);
+      const defaults = defaultAuthState();
       return {
-        ...defaultAuthState(),
+        ...defaults,
         ...parsed,
-        devices: Array.isArray(parsed.devices) ? parsed.devices : []
+        activePairing: parsed.activePairing || parsed.pairing || null,
+        pairing: parsed.activePairing || parsed.pairing || null,
+        devices: Array.isArray(parsed.devices) ? parsed.devices : [],
+        relaySecret: parsed.relaySecret || defaults.relaySecret
       };
     } catch {
       const state = defaultAuthState();
@@ -151,6 +186,7 @@ class DesktopRemoteBridge {
   }
 
   writeAuthState(state = this.authState) {
+    state.pairing = state.activePairing || null;
     this.authState = state;
     fs.mkdirSync(this.app.getPath("userData"), { recursive: true });
     fs.writeFileSync(this.authFilePath(), JSON.stringify(state, null, 2));
@@ -158,9 +194,10 @@ class DesktopRemoteBridge {
   }
 
   getActivePairing() {
-    const pairing = this.authState.pairing;
+    const pairing = this.authState.activePairing || this.authState.pairing;
     if (!pairing) return null;
     if (Date.parse(pairing.expiresAt) <= Date.now()) {
+      this.authState.activePairing = null;
       this.authState.pairing = null;
       this.writeAuthState();
       return null;
@@ -174,6 +211,7 @@ class DesktopRemoteBridge {
 
     if (!this.settings.mobileBridgeEnabled) {
       this.stop();
+      this.disconnectRelay();
       return this.getStatus(true);
     }
 
@@ -189,6 +227,7 @@ class DesktopRemoteBridge {
       this.startServer();
     }
 
+    this.connectRelay();
     this.broadcast("bridge-status", this.getStatus(false));
     return this.getStatus(true);
   }
@@ -199,6 +238,214 @@ class DesktopRemoteBridge {
       return actualHost === "0.0.0.0" || actualHost === "::";
     }
     return actualHost === desiredHost;
+  }
+
+  ensureRelaySecret() {
+    if (!this.authState.relaySecret) {
+      this.authState.relaySecret = createAuthToken();
+      this.writeAuthState();
+    }
+    return this.authState.relaySecret;
+  }
+
+  connectRelay() {
+    const relayUrl = normalizeRelayUrl(this.settings?.mobileRelayUrl || DEFAULT_RELAY_URL);
+    this.relay.url = relayUrl;
+    this.relay.shouldReconnect = true;
+
+    if (typeof WebSocket !== "function") {
+      this.relay.connected = false;
+      this.relay.lastError = "This Electron runtime does not provide WebSocket in the main process";
+      return;
+    }
+
+    if (this.relay.ws && (this.relay.ws.readyState === WebSocket.OPEN || this.relay.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    clearTimeout(this.relay.reconnectTimer);
+    const desktopId = this.authState.desktopId;
+    const secret = this.ensureRelaySecret();
+    let ws;
+    try {
+      ws = new WebSocket(relayWebSocketUrl(relayUrl, desktopId, secret));
+    } catch (error) {
+      this.relay.connected = false;
+      this.relay.lastError = error.message || "Relay connection failed";
+      this.scheduleRelayReconnect();
+      return;
+    }
+
+    this.relay.ws = ws;
+    ws.onopen = () => {
+      this.relay.connected = true;
+      this.relay.lastConnectedAt = now();
+      this.relay.lastError = "";
+      this.relay.reconnectAttempts = 0;
+      this.sendRelayMessage({
+        type: "desktop.hello",
+        desktopId,
+        secret,
+        status: this.getStatus(false)
+      });
+      const pairing = this.getActivePairing();
+      if (pairing) this.publishPairingToRelay(pairing);
+      this.broadcast("bridge-status", this.getStatus(false));
+    };
+    ws.onmessage = (event) => {
+      this.handleRelayMessage(event.data).catch((error) => {
+        this.relay.lastError = error.message || "Relay message failed";
+      });
+    };
+    ws.onerror = () => {
+      this.relay.lastError = "Relay socket error";
+      this.broadcast("bridge-status", this.getStatus(false));
+    };
+    ws.onclose = () => {
+      this.relay.connected = false;
+      this.relay.ws = null;
+      this.broadcast("bridge-status", this.getStatus(false));
+      if (this.relay.shouldReconnect && this.settings?.mobileBridgeEnabled) this.scheduleRelayReconnect();
+    };
+  }
+
+  disconnectRelay() {
+    this.relay.shouldReconnect = false;
+    clearTimeout(this.relay.reconnectTimer);
+    this.relay.reconnectTimer = null;
+    this.relay.connected = false;
+    if (this.relay.ws) {
+      try {
+        this.relay.ws.close();
+      } catch {
+        // Ignore close failures from partially-open sockets.
+      }
+      this.relay.ws = null;
+    }
+  }
+
+  scheduleRelayReconnect() {
+    clearTimeout(this.relay.reconnectTimer);
+    this.relay.reconnectAttempts += 1;
+    const delay = Math.min(30_000, 1000 * this.relay.reconnectAttempts);
+    this.relay.reconnectTimer = setTimeout(() => this.connectRelay(), delay);
+  }
+
+  sendRelayMessage(message) {
+    const openState = typeof WebSocket === "function" ? WebSocket.OPEN : 1;
+    if (!this.relay.ws || this.relay.ws.readyState !== openState) return false;
+    this.relay.ws.send(JSON.stringify(message));
+    return true;
+  }
+
+  publishPairingToRelay(pairing) {
+    return this.sendRelayMessage({
+      type: "pairing.start",
+      desktopId: this.authState.desktopId,
+      relaySessionId: pairing.relaySessionId,
+      codeHash: pairing.codeHash,
+      codePreview: pairing.codePreview,
+      expiresAt: pairing.expiresAt,
+      createdAt: pairing.createdAt
+    });
+  }
+
+  async handleRelayMessage(raw) {
+    const message = JSON.parse(String(raw || "{}"));
+    if (message.type === "relay.ready") {
+      this.relay.sessionId = trimString(message.relaySessionId || "", 160);
+      this.broadcast("bridge-status", this.getStatus(false));
+      return;
+    }
+    if (message.type === "device.paired") {
+      this.upsertRelayDevice(message.device || {}, message.tokenHash || message.deviceTokenHash || "");
+      this.authState.activePairing = null;
+      this.authState.pairing = null;
+      this.writeAuthState();
+      this.broadcast("auth-state", this.getAuthPublicState());
+      this.broadcast("bridge-status", this.getStatus(false));
+      return;
+    }
+    if (message.type === "command") {
+      const payload = await this.handleRelayCommand(message);
+      this.sendRelayMessage({
+        type: "command.result",
+        requestId: message.requestId,
+        payload
+      });
+    }
+  }
+
+  upsertRelayDevice(payload, tokenHash) {
+    if (!tokenHash) return null;
+    const device = {
+      id: trimString(payload.id || randomId("device"), 120),
+      accountId: trimString(payload.accountId || "relay", 160),
+      desktopId: trimString(payload.desktopId || this.authState.desktopId, 160),
+      relaySessionId: trimString(payload.relaySessionId || this.relay.sessionId, 160),
+      name: trimString(payload.name || payload.deviceName || "Mobile device", 120),
+      platform: trimString(payload.platform || "web", 40),
+      clientDeviceId: trimString(payload.clientDeviceId || "", 160),
+      pushProvider: trimString(payload.pushProvider || "", 40),
+      pushToken: trimString(payload.pushToken || "", 500),
+      tokenHash,
+      pairedAt: trimString(payload.pairedAt || now(), 80),
+      lastSeenAt: trimString(payload.lastSeenAt || now(), 80),
+      enabled: payload.enabled !== false
+    };
+
+    this.authState.devices = this.authState.devices.filter((candidate) => (
+      candidate.id !== device.id
+      && (!device.clientDeviceId || candidate.clientDeviceId !== device.clientDeviceId)
+    ));
+    this.authState.devices.push(device);
+    return device;
+  }
+
+  async handleRelayCommand(message) {
+    const deviceId = trimString(message.device?.id || "", 120);
+    const device = this.authState.devices.find((candidate) => candidate.enabled !== false && candidate.id === deviceId);
+    if (!device) {
+      return { ok: false, error: "Unauthorized", status: 401 };
+    }
+    this.markDeviceSeen(device);
+
+    if (message.command === "status") {
+      return { ok: true, status: this.getStatus(false), auth: this.publicDevice(device) };
+    }
+
+    if (!this.settings?.mobileRemoteControlEnabled) {
+      return { ok: false, error: "Remote control is disabled on this desktop", status: 403 };
+    }
+
+    if (message.command === "session.start") {
+      const body = message.payload && typeof message.payload === "object" ? message.payload : {};
+      const settings = this.harness.readSettings();
+      const options = {
+        ...settings,
+        ...(body.options && typeof body.options === "object" ? body.options : {}),
+        launchAction: normalizeAction(body.action),
+        agentPrompt: trimString(body.prompt, 12000)
+      };
+      const result = this.harness.start(options);
+      this.broadcast("bridge-status", this.getStatus(false));
+      return { ok: Boolean(result.ok), result, status: this.getStatus(false) };
+    }
+
+    if (message.command === "session.stop") {
+      const result = this.harness.stop();
+      this.broadcast("bridge-status", this.getStatus(false));
+      return { ok: true, result, status: this.getStatus(false) };
+    }
+
+    if (message.command === "terminal.input") {
+      const data = typeof message.payload?.data === "string" ? message.payload.data : "";
+      if (!data) return { ok: false, error: "Missing terminal input data", status: 400 };
+      this.harness.input(data);
+      return { ok: true };
+    }
+
+    return { ok: false, error: "Unsupported relay command", status: 400 };
   }
 
   startServer() {
@@ -225,6 +472,7 @@ class DesktopRemoteBridge {
       this.server.close();
       this.server = null;
     }
+    this.disconnectRelay();
   }
 
   getStatus(includeSecret = false) {
@@ -245,6 +493,14 @@ class DesktopRemoteBridge {
       lanUrl: `http://${activeHost}:${port}`,
       token: includeSecret ? token : undefined,
       tokenPreview: token ? `${token.slice(0, 6)}...${token.slice(-4)}` : "",
+      relay: {
+        enabled: Boolean(this.settings?.mobileBridgeEnabled),
+        connected: Boolean(this.relay.connected),
+        url: this.relay.url || normalizeRelayUrl(this.settings?.mobileRelayUrl || DEFAULT_RELAY_URL),
+        sessionId: this.relay.sessionId,
+        lastConnectedAt: this.relay.lastConnectedAt,
+        lastError: this.relay.lastError
+      },
       mobileRemoteControlEnabled: Boolean(this.settings?.mobileRemoteControlEnabled),
       updatePushEnabled: Boolean(this.settings?.updatePushEnabled),
       auth: this.getAuthPublicState(),
@@ -268,7 +524,8 @@ class DesktopRemoteBridge {
         active: true,
         codePreview: activePairing.codePreview,
         expiresAt: activePairing.expiresAt,
-        createdAt: activePairing.createdAt
+        createdAt: activePairing.createdAt,
+        relaySessionId: activePairing.relaySessionId
       } : null,
       devices: this.authState.devices
         .filter((device) => device.enabled !== false)
@@ -277,6 +534,8 @@ class DesktopRemoteBridge {
           name: device.name,
           platform: device.platform,
           accountId: device.accountId,
+          desktopId: device.desktopId || this.authState.desktopId,
+          relaySessionId: device.relaySessionId || "",
           pushProvider: device.pushProvider,
           pushTokenPreview: device.pushToken ? `${device.pushToken.slice(0, 8)}...${device.pushToken.slice(-6)}` : "",
           pairedAt: device.pairedAt,
@@ -340,6 +599,8 @@ class DesktopRemoteBridge {
       name: device.name,
       platform: device.platform,
       accountId: device.accountId,
+      desktopId: device.desktopId || this.authState.desktopId,
+      relaySessionId: device.relaySessionId || "",
       pairedAt: device.pairedAt,
       lastSeenAt: device.lastSeenAt
     };
@@ -357,6 +618,7 @@ class DesktopRemoteBridge {
       displayName: trimString(payload.displayName || payload.name || accountId, 120),
       loggedInAt: now()
     };
+    this.authState.activePairing = null;
     this.authState.pairing = null;
     this.writeAuthState();
     this.broadcast("auth-state", this.getAuthPublicState());
@@ -365,6 +627,7 @@ class DesktopRemoteBridge {
 
   logoutAccount() {
     this.authState.account = null;
+    this.authState.activePairing = null;
     this.authState.pairing = null;
     this.authState.devices = [];
     this.writeAuthState();
@@ -373,19 +636,23 @@ class DesktopRemoteBridge {
   }
 
   startPairing() {
-    if (!this.authState.account) {
-      return { ok: false, error: "Desktop account is not logged in" };
+    if (!this.relay.connected) {
+      return { ok: false, error: "Relay is not connected" };
     }
 
     const code = createPairingCode();
+    const relaySessionId = this.relay.sessionId || randomId("relay");
     const pairing = {
       codeHash: hashSecret(code),
       codePreview: `${code.slice(0, 3)} ${code.slice(3)}`,
       expiresAt: new Date(Date.now() + PAIRING_CODE_TTL_MS).toISOString(),
-      createdAt: now()
+      createdAt: now(),
+      relaySessionId
     };
+    this.authState.activePairing = pairing;
     this.authState.pairing = pairing;
     this.writeAuthState();
+    this.publishPairingToRelay(pairing);
     this.broadcast("auth-state", this.getAuthPublicState());
     return {
       ok: true,
@@ -393,27 +660,18 @@ class DesktopRemoteBridge {
         code,
         codePreview: pairing.codePreview,
         expiresAt: pairing.expiresAt,
-        accountId: this.authState.account.accountId,
-        desktopId: this.authState.desktopId
+        accountId: this.authState.account?.accountId,
+        desktopId: this.authState.desktopId,
+        relaySessionId
       },
       status: this.getStatus(true)
     };
   }
 
   pairDevice(payload) {
-    const account = this.authState.account;
-    if (!account) {
-      return { ok: false, error: "Desktop account is not logged in" };
-    }
-
     const pairing = this.getActivePairing();
     if (!pairing) {
       return { ok: false, error: "No active pairing code" };
-    }
-
-    const accountId = normalizeAccountId(payload.accountId || payload.email);
-    if (!safeEqual(accountId, account.accountId)) {
-      return { ok: false, error: "Account mismatch" };
     }
 
     const codeHash = hashSecret(trimString(payload.pairingCode || payload.code, 32).replace(/\s+/g, ""));
@@ -424,7 +682,9 @@ class DesktopRemoteBridge {
     const deviceToken = createAuthToken();
     const device = {
       id: randomId("device"),
-      accountId,
+      accountId: normalizeAccountId(payload.accountId || payload.email) || "local",
+      desktopId: this.authState.desktopId,
+      relaySessionId: pairing.relaySessionId || "",
       name: trimString(payload.deviceName || payload.name || "Mobile device", 120),
       platform: trimString(payload.platform || "mobile", 40),
       clientDeviceId: trimString(payload.clientDeviceId || "", 160),
@@ -440,6 +700,7 @@ class DesktopRemoteBridge {
       !device.clientDeviceId || candidate.clientDeviceId !== device.clientDeviceId
     ));
     this.authState.devices.push(device);
+    this.authState.activePairing = null;
     this.authState.pairing = null;
     this.writeAuthState();
     this.broadcast("auth-state", this.getAuthPublicState());
@@ -448,6 +709,9 @@ class DesktopRemoteBridge {
       ok: true,
       device: this.publicDevice(device),
       deviceToken,
+      deviceId: device.id,
+      desktopId: this.authState.desktopId,
+      relaySessionId: device.relaySessionId,
       status: this.getStatus(false)
     };
   }
@@ -719,7 +983,7 @@ class DesktopRemoteBridge {
       source,
       accountId,
       matchedDeviceIds: this.authState.devices
-        .filter((device) => device.enabled !== false && device.accountId === accountId)
+        .filter((device) => device.enabled !== false && (!accountId || device.accountId === accountId))
         .map((device) => device.id),
       version: trimString(payload.version || payload.release || "", 80),
       title: trimString(payload.title || "DeepSeek TUI Desktop update", 120),

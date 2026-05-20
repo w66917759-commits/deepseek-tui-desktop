@@ -167,6 +167,7 @@ declare global {
     mobileBridgeHost: string;
     mobileBridgePort: number;
     mobileBridgeToken: string;
+    mobileRelayUrl: string;
     mobileRemoteControlEnabled: boolean;
     updatePushEnabled: boolean;
   }
@@ -303,6 +304,13 @@ declare global {
     targetAreas: string[];
     acceptance: string[];
     status: "draft" | "queued" | "running" | "completed" | "failed" | "blocked";
+    runId?: string;
+    runtimeThreadId?: string;
+    runtimeTurnId?: string;
+    blockedReason?: string;
+    outputSummary?: string;
+    lastActivityAt?: string;
+    completedAt?: string;
   }
 
   interface TaskBoardPlan {
@@ -313,6 +321,36 @@ declare global {
     activeSkillIds: string[];
     items: TaskBoardItem[];
     warnings: string[];
+  }
+
+  interface TaskBoardRunSummary {
+    boardId: string;
+    total: number;
+    draft: number;
+    queued: number;
+    running: number;
+    completed: number;
+    failed: number;
+    blocked: number;
+    runnable: number;
+    nextItemId: string;
+    activeRunId: string;
+    lastActivityAt: string;
+    completedAt: string;
+  }
+
+  type CapabilityKind = "skill" | "mcp" | "desktop-tool" | "runtime-api";
+  type CapabilityPermission = "read-only" | "workspace-write" | "danger-full-access";
+
+  interface CapabilityRecord {
+    id: string;
+    kind: CapabilityKind;
+    name: string;
+    description: string;
+    permission: CapabilityPermission;
+    runtimeState: RuntimeCapabilityState;
+    reason: string;
+    source: string;
   }
 
   interface ConversationSession {
@@ -985,6 +1023,14 @@ declare global {
     lanUrl: string;
     token?: string;
     tokenPreview: string;
+    relay?: {
+      enabled: boolean;
+      connected: boolean;
+      url: string;
+      sessionId: string;
+      lastConnectedAt: string;
+      lastError: string;
+    };
     mobileRemoteControlEnabled: boolean;
     updatePushEnabled: boolean;
     auth: RemoteAuthState;
@@ -1053,13 +1099,16 @@ declare global {
     codePreview: string;
     expiresAt: string;
     createdAt: string;
+    relaySessionId?: string;
   }
 
   interface RemoteDevice {
     id: string;
     name: string;
     platform: string;
-    accountId: string;
+    accountId?: string;
+    desktopId?: string;
+    relaySessionId?: string;
     pushProvider?: string;
     pushTokenPreview?: string;
     pairedAt: string;
@@ -1087,8 +1136,9 @@ declare global {
       code: string;
       codePreview: string;
       expiresAt: string;
-      accountId: string;
+      accountId?: string;
       desktopId: string;
+      relaySessionId?: string;
     };
   }
 }

@@ -29,7 +29,6 @@ import {
   Layers3,
   Link2,
   LoaderCircle,
-  LogOut,
   MessageSquare,
   Palette,
   Plug,
@@ -74,13 +73,26 @@ import {
 import { deriveInteractionState, type DeriveInteractionStateOptions, type InteractionPhase, type InteractionState } from "./interactionState";
 import { buildRuntimeTimeline, type RuntimeTimeline, type RuntimeTimelineEntry } from "./runtimeTimeline";
 import { routeSkillsForPrompt, type SkillRouteDecision } from "./skillRouter";
+import { buildCapabilityContext, buildCapabilityRecords } from "./capabilityRegistry";
 import {
   applyRuntimeStatusToTaskBoard,
-  buildTaskBoardExecutionPrompt,
   buildTaskDecompositionPrompt,
   parseTaskBoardPlan,
   shouldCreateTaskBoard
 } from "./taskDecomposition";
+import {
+  applyTaskBoardRuntimeDetails,
+  applyTaskRuntimeDetail,
+  bindTaskBoardItemRuntime,
+  buildTaskBoardItemExecutionPrompt,
+  createTaskBoardRunId,
+  nextRunnableTaskBoardItem,
+  normalizeTaskBoardPlans as normalizeRegistryTaskBoardPlans,
+  propagateBlockedTaskItems,
+  queueTaskBoardItem,
+  resetTaskBoardItemForRetry,
+  taskBoardRunSummary
+} from "./taskRegistry";
 
 type InspectorPanel = "skills" | "remote" | "git" | "settings" | null;
 type MainView = "chat" | "tools" | "tasks";
@@ -237,6 +249,7 @@ const defaultSettings: DesktopSettings = {
   mobileBridgeHost: "127.0.0.1",
   mobileBridgePort: 8765,
   mobileBridgeToken: "",
+  mobileRelayUrl: "https://deepseektuidesktop.cn",
   mobileRemoteControlEnabled: false,
   updatePushEnabled: false
 };
@@ -957,23 +970,23 @@ const uiCopy = {
       failed: "定时任务操作失败"
     },
     remote: {
-      accountTitle: "手机控制账号",
-      accountLoggedOut: "未登录推送账号",
-      accountPlaceholder: "邮箱 / 用户 ID",
-      displayNamePlaceholder: "显示名称（可选）",
-      login: "登录并绑定桌面端",
-      logout: "退出登录",
+      accountTitle: "Relay 设备标识",
+      accountLoggedOut: "本机桌面端",
+      accountPlaceholder: "Legacy 账号（可选）",
+      displayNamePlaceholder: "Legacy 显示名（可选）",
+      login: "保存 Legacy 账号",
+      logout: "清除 Legacy 账号",
       pairTitle: "手机配对",
-      pairHint: "手机端使用同一账号和配对码完成绑定。",
+      pairHint: "手机端只输入这个 6 位配对码即可绑定；普通用户不需要账号或公网地址。",
       startPairing: "生成配对码",
       pairingCode: "配对码",
       pairingExpires: "过期时间",
       noDevices: "暂无已配对手机",
       pairedDevices: "已配对手机",
       revokeDevice: "移除设备",
-      loginRequired: "请先登录推送账号",
-      loginSaved: "推送账号已登录",
-      logoutSaved: "已退出推送账号",
+      loginRequired: "Legacy 账号不是配对必填项",
+      loginSaved: "Legacy 账号已保存",
+      logoutSaved: "Legacy 账号已清除",
       pairingStarted: "配对码已生成",
       pairingFailed: "配对码生成失败",
       deviceRevoked: "设备已移除",
@@ -982,10 +995,14 @@ const uiCopy = {
       allowUpdates: "允许自动更新推送通知",
       bridgeRunning: "手机控制已运行",
       bridgeStopped: "手机控制未启动",
-      tokenRequired: "手机控制需要访问密钥。",
-      connectionAddress: "连接地址",
-      accessKey: "访问密钥",
-      copyLanUrl: "复制连接地址",
+      tokenRequired: "开启手机控制后桌面端会主动连接 Relay。",
+      relayUrl: "Relay 地址",
+      relayConnected: "Relay 已连接",
+      relayDisconnected: "Relay 未连接",
+      connectionAddress: "本地 Bridge 地址",
+      accessKey: "本地访问密钥",
+      localBridgeNote: "这里显示的是桌面本机/局域网地址，不是公开手机网页可用的公网地址。127.0.0.1 只能被这台电脑自己访问；正式发布需要云端中继或自动 HTTPS tunnel。",
+      copyLanUrl: "复制本地地址",
       copyToken: "复制访问密钥",
       saveApply: "保存手机控制",
       restart: "重启",
@@ -1452,23 +1469,23 @@ const uiCopy = {
       failed: "Scheduled task action failed"
     },
     remote: {
-      accountTitle: "Mobile control account",
-      accountLoggedOut: "No push account signed in",
-      accountPlaceholder: "Email / user ID",
-      displayNamePlaceholder: "Display name (optional)",
-      login: "Sign in and bind desktop",
-      logout: "Sign out",
+      accountTitle: "Relay device identity",
+      accountLoggedOut: "This desktop",
+      accountPlaceholder: "Legacy account (optional)",
+      displayNamePlaceholder: "Legacy display name (optional)",
+      login: "Save legacy account",
+      logout: "Clear legacy account",
       pairTitle: "Phone pairing",
-      pairHint: "Use the same account plus this code in the phone app to pair.",
+      pairHint: "Enter this six digit code on the phone. Normal users do not need an account or public address.",
       startPairing: "Generate pairing code",
       pairingCode: "Pairing code",
       pairingExpires: "Expires",
       noDevices: "No paired phones yet",
       pairedDevices: "Paired phones",
       revokeDevice: "Remove device",
-      loginRequired: "Sign in to the push account first",
-      loginSaved: "Push account signed in",
-      logoutSaved: "Signed out from push account",
+      loginRequired: "Legacy account is not required for pairing",
+      loginSaved: "Legacy account saved",
+      logoutSaved: "Legacy account cleared",
       pairingStarted: "Pairing code generated",
       pairingFailed: "Pairing code failed",
       deviceRevoked: "Device removed",
@@ -1477,10 +1494,14 @@ const uiCopy = {
       allowUpdates: "Allow automatic update push notifications",
       bridgeRunning: "Mobile control running",
       bridgeStopped: "Mobile control stopped",
-      tokenRequired: "Mobile control requires an access key.",
-      connectionAddress: "Connection address",
-      accessKey: "Access key",
-      copyLanUrl: "Copy address",
+      tokenRequired: "When mobile control is enabled, the desktop connects to Relay automatically.",
+      relayUrl: "Relay URL",
+      relayConnected: "Relay connected",
+      relayDisconnected: "Relay disconnected",
+      connectionAddress: "Local Bridge address",
+      accessKey: "Local access key",
+      localBridgeNote: "This is a desktop-local or LAN address, not a public mobile-web Bridge address. 127.0.0.1 is only reachable from this computer; public release needs a cloud relay or automatic HTTPS tunnel.",
+      copyLanUrl: "Copy local address",
       copyToken: "Copy access key",
       saveApply: "Save mobile control",
       restart: "Restart",
@@ -2031,6 +2052,10 @@ function latestRuntimeAssistantText(detail: RuntimeApiThreadDetail | null | unde
     .at(-1)?.content || "";
 }
 
+function waitForMs(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function RunningActivityMark({ compact = false }: { compact?: boolean }) {
   return (
     <span className={compact ? "running-activity-mark compact" : "running-activity-mark"} aria-hidden>
@@ -2100,26 +2125,7 @@ function sanitizeConversationMessages(messages: ChatMessage[], language: AppLang
 }
 
 function normalizeTaskBoardList(value: unknown): TaskBoardPlan[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((candidate): candidate is TaskBoardPlan => {
-    if (!candidate || typeof candidate !== "object") return false;
-    const board = candidate as Partial<TaskBoardPlan>;
-    return Boolean(
-      board.id
-      && board.sourcePrompt
-      && Array.isArray(board.items)
-      && board.items.every((item) => (
-        item
-        && typeof item.id === "string"
-        && typeof item.title === "string"
-        && typeof item.goal === "string"
-        && typeof item.agentRole === "string"
-        && Array.isArray(item.dependencies)
-        && Array.isArray(item.targetAreas)
-        && Array.isArray(item.acceptance)
-      ))
-    );
-  });
+  return normalizeRegistryTaskBoardPlans(value);
 }
 
 function activeTaskBoardForSession(session: ConversationSession | null | undefined) {
@@ -2559,8 +2565,6 @@ function App() {
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<StatusState>({ type: "ready" });
   const [remoteMessage, setRemoteMessage] = useState("");
-  const [loginAccount, setLoginAccount] = useState("");
-  const [loginDisplayName, setLoginDisplayName] = useState("");
   const [pairingCode, setPairingCode] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [agentPrompt, setAgentPrompt] = useState("");
@@ -2690,11 +2694,29 @@ function App() {
     )),
     [conversationStore.activeSessionId, runtimeOrchestratorSnapshot.turns]
   );
+  const capabilityRecords = useMemo(
+    () => buildCapabilityRecords({
+      skills: runtimeApiSkills,
+      mcpServers: runtimeApiMcpServers,
+      settings
+    }),
+    [runtimeApiMcpServers, runtimeApiSkills, settings]
+  );
+  const capabilityContext = useMemo(
+    () => buildCapabilityContext(capabilityRecords, language),
+    [capabilityRecords, language]
+  );
   const activeTaskBoardWithRuntimeStatus = useMemo(
-    () => activeTaskBoard
-      ? applyRuntimeStatusToTaskBoard(activeTaskBoard, runtimeSnapshot.agents || [], activeSessionRuntimeTurns)
-      : null,
-    [activeSessionRuntimeTurns, activeTaskBoard, runtimeSnapshot.agents]
+    () => {
+      if (!activeTaskBoard) return null;
+      const runtimePlan = applyRuntimeStatusToTaskBoard(activeTaskBoard, runtimeSnapshot.agents || [], activeSessionRuntimeTurns);
+      return applyTaskBoardRuntimeDetails(runtimePlan, runtimeThreadDetails);
+    },
+    [activeSessionRuntimeTurns, activeTaskBoard, runtimeSnapshot.agents, runtimeThreadDetails]
+  );
+  const activeTaskBoardSummary = useMemo(
+    () => activeTaskBoardWithRuntimeStatus ? taskBoardRunSummary(activeTaskBoardWithRuntimeStatus) : null,
+    [activeTaskBoardWithRuntimeStatus]
   );
   const activeRuntimeApiBusy = useMemo(
     () => activeRuntimeThreadDetail?.turns.some((turn) => ACTIVE_RUNTIME_API_TURN_STATUSES.has(turn.status)) || false,
@@ -2716,17 +2738,17 @@ function App() {
     runtimeSnapshot,
     runtimeApiStatus,
     runtimeEvents,
-    selectedCapabilities: runtimeApiMcpServers,
+    selectedCapabilities: capabilityRecords,
     processStreamEnabled,
     nowMs: interactionNow
   }), [
     activeRuntimeThreadDetail,
     activeSessionRuntimeTurns,
     activeSessionTerminalRunning,
+    capabilityRecords,
     hasGlobalApiKey,
     interactionNow,
     processStreamEnabled,
-    runtimeApiMcpServers,
     runtimeApiStatus,
     runtimeEvents,
     runtimeSnapshot,
@@ -3142,13 +3164,6 @@ function App() {
   }, [toolPage]);
 
   useEffect(() => {
-    const account = remoteStatus?.auth.account;
-    if (!account) return;
-    setLoginAccount((current) => current || account.email || account.accountId);
-    setLoginDisplayName((current) => current || account.displayName || "");
-  }, [remoteStatus?.auth.account]);
-
-  useEffect(() => {
     if (mainView !== "chat") {
       return;
     }
@@ -3330,13 +3345,16 @@ function App() {
       prompt: skillRoute.sanitizedPrompt || prompt,
       permissionMode: mode,
       settings: sourceSettings,
-      activeSkillIds: skillRoute.activeSkillIds
+      activeSkillIds: skillRoute.activeSkillIds,
+      routeIntents: skillRoute.intents
     });
     setLastSkillRoute(skillRoute);
     setLastModelRoute(modelRoute);
     setDesktopHookEvents((events) => appendDesktopHookEvent(events, "afterSkillRoute", "Skill route resolved", {
       activeSkillIds: skillRoute.activeSkillIds,
-      model: modelRoute.apiModel
+      intents: skillRoute.intents.map((intent) => intent.id),
+      model: modelRoute.apiModel,
+      routeDebug: skillRoute.routeDebug.summary
     }));
     return {
       skillRoute,
@@ -4211,7 +4229,6 @@ function App() {
     prompt?: string;
     clearComposer?: boolean;
     skipTaskBoard?: boolean;
-    taskBoard?: TaskBoardPlan;
   }) => {
     const prompt = String(options?.prompt ?? agentPrompt).trim();
     if (!prompt) return;
@@ -4236,16 +4253,19 @@ function App() {
       ...routing.runtimeSettings,
       processStreamEnabled
     });
-    const shouldPrepareTaskBoard = !options?.skipTaskBoard && !options?.taskBoard && shouldCreateTaskBoard({
+    const shouldPrepareTaskBoard = !options?.skipTaskBoard && shouldCreateTaskBoard({
       prompt,
       permissionMode,
       skillRoutingMode: baseRuntimeSettings.skillRoutingMode,
       activeSkillIds: routing.skillRoute.activeSkillIds
     });
-    const displayPrompt = options?.taskBoard ? options.taskBoard.sourcePrompt : prompt;
-    const finalRuntimePrompt = options?.taskBoard
-      ? buildTaskBoardExecutionPrompt(options.taskBoard, language)
-      : routing.prompt;
+    const displayPrompt = prompt;
+    const finalRuntimePrompt = [
+      capabilityContext,
+      "",
+      "User request:",
+      routing.prompt
+    ].join("\n");
 
     let pendingMessages: ChatMessage[] = currentSession.messages;
     commitConversationStore((current) => {
@@ -4328,7 +4348,8 @@ function App() {
           model: routing.modelRoute.apiModel,
           activeSkillIds: routing.skillRoute.activeSkillIds,
           maxSubagents: runtimeSettings.maxSubagents,
-          language
+          language,
+          capabilityContext
         });
         const result = await desktop.startRuntimeApiThreadTurn({
           conversationId: targetSessionId,
@@ -4370,12 +4391,13 @@ function App() {
             ? "已生成任务拆解工作台。确认后可以按任务板执行，或跳过任务板直接执行原任务。"
             : "Task board generated. You can execute from the board or skip it and run the original task directly."
         };
+        const preparedPlan = propagateBlockedTaskItems(parsed.plan);
         commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
           ...session,
           runtimeThreadId: result.threadId,
           updatedAt: new Date().toISOString(),
-          taskBoards: [...normalizeTaskBoardList(session.taskBoards), parsed.plan],
-          activeTaskBoardId: parsed.plan.id,
+          taskBoards: [...normalizeTaskBoardList(session.taskBoards), preparedPlan],
+          activeTaskBoardId: preparedPlan.id,
           messages: [...session.messages.filter((message) => message.content !== (language === "zh" ? "正在等待运行时回复…" : "Waiting for runtime response...")), assistantMessage]
         })));
         if (activeSessionIdRef.current === targetSessionId) {
@@ -4387,19 +4409,6 @@ function App() {
         setTaskBoardMessage(language === "zh" ? "任务板已生成。" : "Task board generated.");
         setStatus({ type: "exited", exitCode: 0 });
         return;
-      }
-
-      if (options?.taskBoard) {
-        const queuedBoard: TaskBoardPlan = {
-          ...options.taskBoard,
-          items: options.taskBoard.items.map((item) => ({ ...item, status: item.status === "completed" ? "completed" : "queued" }))
-        };
-        commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
-          ...session,
-          updatedAt: new Date().toISOString(),
-          taskBoards: normalizeTaskBoardList(session.taskBoards).map((board) => board.id === queuedBoard.id ? queuedBoard : board),
-          activeTaskBoardId: queuedBoard.id
-        })));
       }
 
       const runtimePrompt = buildAnchoredRuntimePrompt(finalRuntimePrompt, currentSession.contextAnchors || [], language);
@@ -4435,16 +4444,196 @@ function App() {
     } finally {
       setTaskBoardBusy(false);
     }
-  }, [agentPrompt, apiKey, applyConversationStore, commitConversationStore, conversationStore, desktop, interactionStateBase, language, permissionMode, processStreamEnabled, renderTerminalForSession, routePromptForRun, selectedModelApiName, settings, syncRuntimeDetailAnchors, t]);
+  }, [agentPrompt, apiKey, applyConversationStore, capabilityContext, commitConversationStore, conversationStore, desktop, interactionStateBase, language, permissionMode, processStreamEnabled, renderTerminalForSession, routePromptForRun, selectedModelApiName, settings, syncRuntimeDetailAnchors, t]);
 
-  const executeTaskBoard = useCallback(async (board: TaskBoardPlan) => {
-    await sendPrompt({
-      prompt: board.sourcePrompt,
-      taskBoard: board,
-      skipTaskBoard: true,
-      clearComposer: false
+  const executeTaskBoard = useCallback(async (board: TaskBoardPlan, retryItemId = "") => {
+    if (taskBoardBusy || activeSessionBusy) return;
+    let currentSession = findConversationSession(conversationStore, conversationStore.activeSessionId)
+      || createConversationSession(settings.workspacePath, language, [createWelcomeMessage(language)]);
+    if (!findConversationSession(conversationStore, currentSession.id)) {
+      applyConversationStore(upsertConversationSession(conversationStore, currentSession, language));
+    }
+    const targetSessionId = currentSession.id;
+    const runtimeModel = board.model || selectedModelApiName;
+    const runtimeSettings = normalizeSettings({
+      ...settings,
+      model: runtimeModel,
+      enabledSkills: board.activeSkillIds.length > 0 ? board.activeSkillIds : settings.enabledSkills,
+      processStreamEnabled
     });
-  }, [sendPrompt]);
+    const permissionModeForRuntime = permissionMode === "agent" ? "agent" : permissionMode;
+    const saveBoard = (nextBoard: TaskBoardPlan) => {
+      commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => {
+        const boards = normalizeTaskBoardList(session.taskBoards);
+        const replaced = boards.some((candidate) => candidate.id === nextBoard.id)
+          ? boards.map((candidate) => candidate.id === nextBoard.id ? nextBoard : candidate)
+          : [...boards, nextBoard];
+        return {
+          ...session,
+          updatedAt: new Date().toISOString(),
+          taskBoards: replaced,
+          activeTaskBoardId: nextBoard.id
+        };
+      }));
+    };
+    const failItem = (plan: TaskBoardPlan, itemId: string, reason: string) => propagateBlockedTaskItems({
+      ...plan,
+      items: plan.items.map((item) => item.id === itemId
+        ? {
+          ...item,
+          status: "failed",
+          blockedReason: reason,
+          lastActivityAt: new Date().toISOString(),
+          completedAt: new Date().toISOString()
+        }
+        : item)
+    });
+
+    setTaskBoardBusy(true);
+    setTaskBoardFallbackPrompt("");
+    setStatus({ type: "launching" });
+    const launchApiKey = apiKey.trim();
+    if (launchApiKey) {
+      const keyResult = await desktop.saveApiKey({ provider: runtimeSettings.provider, apiKey: launchApiKey });
+      if (!keyResult.ok) {
+        setTaskBoardBusy(false);
+        setStatus({ type: "error", message: keyResult.error || t.settings.apiKeySaveFailed });
+        return;
+      }
+    }
+
+    try {
+      let workingBoard = applyTaskBoardRuntimeDetails(board, runtimeThreadDetails);
+      if (retryItemId) {
+        workingBoard = resetTaskBoardItemForRetry(workingBoard, retryItemId);
+      }
+      workingBoard = propagateBlockedTaskItems(workingBoard);
+      saveBoard(workingBoard);
+      const runId = createTaskBoardRunId(workingBoard.id);
+      let ranAny = false;
+
+      while (true) {
+        const nextItem = nextRunnableTaskBoardItem(workingBoard);
+        if (!nextItem) break;
+        if (retryItemId && nextItem.id !== retryItemId) break;
+        ranAny = true;
+        workingBoard = queueTaskBoardItem(workingBoard, nextItem.id, runId);
+        saveBoard(workingBoard);
+        setTaskBoardMessage(language === "zh"
+          ? `正在执行任务：${nextItem.title}`
+          : `Running task: ${nextItem.title}`);
+
+        const created = await desktop.createRuntimeApiThread({
+          workspacePath: settings.workspacePath,
+          model: runtimeModel,
+          mode: permissionModeForRuntime,
+          allowShell: runtimeSettings.allowShell,
+          settings: runtimeSettings
+        });
+        if (!created.ok || !created.thread?.id) {
+          workingBoard = failItem(workingBoard, nextItem.id, created.error || t.status.launchFailed);
+          saveBoard(workingBoard);
+          setStatus({ type: "error", message: created.error || t.status.launchFailed });
+          break;
+        }
+
+        const threadId = created.thread.id;
+        workingBoard = bindTaskBoardItemRuntime(workingBoard, nextItem.id, threadId);
+        saveBoard(workingBoard);
+        setRuntimeThreadDetails((current) => current[threadId]
+          ? current
+          : {
+            ...current,
+            [threadId]: {
+              thread: created.thread!,
+              turns: [],
+              items: [],
+              latest_seq: 0
+            }
+          });
+        const currentItem = workingBoard.items.find((item) => item.id === nextItem.id) || nextItem;
+        const itemPrompt = buildTaskBoardItemExecutionPrompt({
+          plan: workingBoard,
+          item: currentItem,
+          language,
+          capabilityContext
+        });
+        const runtimePrompt = buildAnchoredRuntimePrompt(itemPrompt, currentSession.contextAnchors || [], language);
+        const result = await desktop.startRuntimeApiThreadTurn({
+          conversationId: targetSessionId,
+          threadId,
+          workspacePath: settings.workspacePath,
+          prompt: runtimePrompt,
+          model: runtimeModel,
+          mode: permissionModeForRuntime,
+          allowShell: runtimeSettings.allowShell,
+          settings: runtimeSettings
+        });
+        if (!result.ok || !result.threadId || !result.detail) {
+          workingBoard = failItem(workingBoard, nextItem.id, result.error || t.status.launchFailed);
+          saveBoard(workingBoard);
+          setStatus({ type: "error", message: result.error || t.status.launchFailed });
+          break;
+        }
+
+        let latestDetail = result.detail;
+        let detailForState = latestDetail;
+        setRuntimeThreadDetails((current) => ({ ...current, [result.threadId!]: detailForState }));
+        if (result.turn?.id) {
+          workingBoard = bindTaskBoardItemRuntime(workingBoard, nextItem.id, result.threadId, result.turn.id);
+        }
+        while (true) {
+          workingBoard = applyTaskRuntimeDetail(workingBoard, nextItem.id, latestDetail);
+          saveBoard(workingBoard);
+          const observedItem = workingBoard.items.find((item) => item.id === nextItem.id);
+          if (!observedItem || (observedItem.status !== "queued" && observedItem.status !== "running")) break;
+          await waitForMs(1500);
+          const refreshed = await desktop.getRuntimeApiThread({ threadId: result.threadId, settings: runtimeSettings });
+          if (!refreshed.ok || !refreshed.detail) {
+            workingBoard = failItem(workingBoard, nextItem.id, refreshed.error || t.status.launchFailed);
+            saveBoard(workingBoard);
+            setStatus({ type: "error", message: refreshed.error || t.status.launchFailed });
+            break;
+          }
+          latestDetail = refreshed.detail;
+          detailForState = latestDetail;
+          setRuntimeThreadDetails((current) => ({ ...current, [result.threadId!]: detailForState }));
+        }
+        const finishedItem = workingBoard.items.find((item) => item.id === nextItem.id);
+        if (finishedItem?.status !== "completed") {
+          const reason = finishedItem?.blockedReason || (language === "zh" ? "任务未完成。" : "Task did not complete.");
+          setTaskBoardMessage(reason);
+          setStatus(finishedItem?.status === "failed" ? { type: "error", message: reason } : { type: "stopped" });
+          break;
+        }
+        if (retryItemId) break;
+      }
+
+      const summary = taskBoardRunSummary(workingBoard);
+      if (!ranAny) {
+        setTaskBoardMessage(language === "zh"
+          ? "没有可执行任务。请检查依赖、失败或阻塞原因。"
+          : "No runnable task is available. Check dependencies, failures, or blocked reasons.");
+        setStatus({ type: "ready" });
+      } else if (summary.completed === summary.total) {
+        setTaskBoardMessage(language === "zh" ? "任务板已全部完成。" : "Task board completed.");
+        setStatus({ type: "exited", exitCode: 0 });
+      } else if (summary.failed > 0) {
+        setTaskBoardMessage(language === "zh"
+          ? `任务板暂停：${summary.failed} 个失败，${summary.blocked} 个阻塞。`
+          : `Task board paused: ${summary.failed} failed, ${summary.blocked} blocked.`);
+      } else {
+        setTaskBoardMessage(language === "zh"
+          ? `任务板暂停：${summary.completed}/${summary.total} 已完成。`
+          : `Task board paused: ${summary.completed}/${summary.total} completed.`);
+        setStatus({ type: "ready" });
+      }
+    } catch (error) {
+      setStatus({ type: "error", message: error instanceof Error ? error.message : t.status.launchFailed });
+    } finally {
+      setTaskBoardBusy(false);
+    }
+  }, [activeSessionBusy, apiKey, applyConversationStore, capabilityContext, commitConversationStore, conversationStore, desktop, language, permissionMode, processStreamEnabled, runtimeThreadDetails, selectedModelApiName, settings, t, taskBoardBusy]);
 
   const executeOriginalPrompt = useCallback(async (prompt: string) => {
     setTaskBoardFallbackPrompt("");
@@ -4603,28 +4792,6 @@ function App() {
     setSettings(result.settings);
     setRemoteStatus(result.status);
     setRemoteMessage(t.remote.tokenUpdated);
-  }, [desktop, t]);
-
-  const loginRemoteAccount = useCallback(async () => {
-    const accountId = loginAccount.trim();
-    if (!accountId) {
-      setRemoteMessage(t.remote.loginRequired);
-      return;
-    }
-    const result = await desktop.loginRemoteAccount({
-      accountId,
-      email: accountId,
-      displayName: loginDisplayName.trim()
-    });
-    if (result.status) setRemoteStatus(result.status);
-    setRemoteMessage(result.ok ? t.remote.loginSaved : result.error || t.remote.loginRequired);
-  }, [desktop, loginAccount, loginDisplayName, t]);
-
-  const logoutRemoteAccount = useCallback(async () => {
-    const result = await desktop.logoutRemoteAccount();
-    if (result.status) setRemoteStatus(result.status);
-    setPairingCode("");
-    setRemoteMessage(result.ok ? t.remote.logoutSaved : result.error || t.remote.logoutSaved);
   }, [desktop, t]);
 
   const startRemotePairing = useCallback(async () => {
@@ -4802,13 +4969,26 @@ function App() {
     : "conversation-layout conversation-layout-single";
   const terminalCardClassName = "terminal-card stream-output-card";
   const latestHookEvent = desktopHookEvents.at(-1);
+  const routeIntentText = lastSkillRoute?.intents.length
+    ? lastSkillRoute.intents.map((intent) => `${intent.id} ${intent.score}`).join(", ")
+    : "";
+  const selectedRouteCandidates = (lastSkillRoute?.candidates || [])
+    .filter((candidate) => candidate.selected)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 4);
+  const rejectedRouteSkills = (lastSkillRoute?.rejectedSkills || []).slice(0, 3);
   const routingPanel = lastSkillRoute || lastModelRoute ? (
     <section className="runtime-routing-panel">
       <div>
         <strong>{language === "zh" ? "本轮路由" : "Turn routing"}</strong>
-        <p>{latestHookEvent?.summary || (language === "zh" ? "发送前会按任务选择 Skill 与模型。" : "Skills and model are selected per turn.")}</p>
+        <p>{lastSkillRoute?.routeDebug.summary || latestHookEvent?.summary || (language === "zh" ? "发送前会按任务选择 Skill 与模型。" : "Skills and model are selected per turn.")}</p>
       </div>
       <div className="runtime-routing-chips">
+        {routeIntentText ? (
+          <span className="status-chip">
+            {language === "zh" ? `意图：${routeIntentText}` : `Intent: ${routeIntentText}`}
+          </span>
+        ) : null}
         <span className="status-chip enabled">
           {language === "zh" ? `Skill：${lastSkillRoute?.activeSkillIds.length ? lastSkillRoute.activeSkillIds.join(", ") : "无"}` : `Skills: ${lastSkillRoute?.activeSkillIds.length ? lastSkillRoute.activeSkillIds.join(", ") : "none"}`}
         </span>
@@ -4821,7 +5001,21 @@ function App() {
       {lastSkillRoute?.matches.length ? (
         <div className="runtime-routing-reasons">
           {lastSkillRoute.matches.map((match) => (
-            <small key={`${match.skillId}-${match.source}`}>{match.skillId}: {match.reason}</small>
+            <small key={`${match.skillId}-${match.source}`}>{match.skillId}: {match.reason}{typeof match.score === "number" && Number.isFinite(match.score) ? ` (${match.score})` : ""}</small>
+          ))}
+        </div>
+      ) : null}
+      {selectedRouteCandidates.length || rejectedRouteSkills.length ? (
+        <div className="runtime-routing-reasons">
+          {selectedRouteCandidates.map((candidate) => (
+            <small key={`candidate-${candidate.skillId}`}>
+              {language === "zh" ? "候选" : "Candidate"} {candidate.skillId}: {candidate.score}
+            </small>
+          ))}
+          {rejectedRouteSkills.map((skill) => (
+            <small key={`rejected-${skill.skillId}`}>
+              {language === "zh" ? "排除" : "Rejected"} {skill.skillId}: {skill.reason}
+            </small>
           ))}
         </div>
       ) : null}
@@ -4949,6 +5143,36 @@ function App() {
             <p className="runtime-api-empty">{t.runtimeApi.noMcp}</p>
           )}
         </article>
+
+        <article className="runtime-api-column">
+          <div className="runtime-api-column-title">
+            <Layers3 size={16} aria-hidden />
+            <strong>{language === "zh" ? "能力状态" : "Capabilities"}</strong>
+          </div>
+          {capabilityRecords.length > 0 ? (
+            <div className="runtime-api-list compact">
+              {capabilityRecords.slice(0, 8).map((record) => {
+                const isCallable = record.runtimeState.callable && !record.runtimeState.failed && !record.runtimeState.approvalBlocked;
+                const isWarning = record.runtimeState.selected && !isCallable;
+                return (
+                  <div
+                    key={record.id}
+                    className={`runtime-api-row capability ${isCallable ? "enabled" : ""} ${isWarning ? "warning" : ""}`}
+                  >
+                    <span>
+                      <strong>{record.name}</strong>
+                      <small>{record.kind} · {record.permission} · {record.runtimeState.state}</small>
+                      <small>{record.reason || record.runtimeState.reason || record.description}</small>
+                    </span>
+                    {isCallable ? <CheckCircle2 size={15} aria-hidden /> : <CircleAlert size={15} aria-hidden />}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="runtime-api-empty">{language === "zh" ? "暂无能力记录" : "No capability records"}</p>
+          )}
+        </article>
       </div>
       <div className="runtime-api-approvals">
         <strong>{t.runtimeApi.approvals}</strong>
@@ -5056,8 +5280,8 @@ function App() {
           <h3>{language === "zh" ? "任务拆解工作台" : "Task Board"}</h3>
           <p>{activeTaskBoardWithRuntimeStatus
             ? (language === "zh"
-              ? `已拆解 ${activeTaskBoardWithRuntimeStatus.items.length} 个任务，模型 ${activeTaskBoardWithRuntimeStatus.model}`
-              : `${activeTaskBoardWithRuntimeStatus.items.length} tasks prepared with ${activeTaskBoardWithRuntimeStatus.model}`)
+              ? `已拆解 ${activeTaskBoardWithRuntimeStatus.items.length} 个任务，已完成 ${activeTaskBoardSummary?.completed || 0} 个，模型 ${activeTaskBoardWithRuntimeStatus.model}`
+              : `${activeTaskBoardWithRuntimeStatus.items.length} tasks, ${activeTaskBoardSummary?.completed || 0} completed with ${activeTaskBoardWithRuntimeStatus.model}`)
             : taskBoardMessage}</p>
         </div>
         <div className="task-board-actions">
@@ -5070,7 +5294,7 @@ function App() {
                 disabled={taskBoardBusy || activeSessionBusy}
               >
                 <Bot size={15} aria-hidden />
-                {language === "zh" ? "执行任务板" : "Execute Board"}
+                {language === "zh" ? "继续执行剩余任务" : "Continue Remaining"}
               </button>
               <button
                 type="button"
@@ -5115,9 +5339,41 @@ function App() {
                 <span>{language === "zh" ? "依赖" : "Deps"}: {item.dependencies.length ? item.dependencies.join(", ") : "-"}</span>
                 <span>{language === "zh" ? "范围" : "Areas"}: {item.targetAreas.join(", ")}</span>
               </div>
+              {item.runtimeThreadId || item.runtimeTurnId || item.runId ? (
+                <div className="task-board-runtime-meta">
+                  {item.runId ? <code>run {item.runId}</code> : null}
+                  {item.runtimeThreadId ? <code>thread {item.runtimeThreadId}</code> : null}
+                  {item.runtimeTurnId ? <code>turn {item.runtimeTurnId}</code> : null}
+                </div>
+              ) : null}
+              {item.outputSummary ? (
+                <p className="task-board-output">
+                  <strong>{language === "zh" ? "输出" : "Output"}</strong>
+                  {item.outputSummary}
+                </p>
+              ) : null}
+              {item.blockedReason ? (
+                <p className="task-board-blocked">
+                  <strong>{language === "zh" ? "阻塞" : "Blocked"}</strong>
+                  {item.blockedReason}
+                </p>
+              ) : null}
               <ul>
                 {item.acceptance.slice(0, 3).map((check) => <li key={check}>{check}</li>)}
               </ul>
+              {(item.status === "failed" || item.status === "blocked") ? (
+                <div className="task-board-card-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void executeTaskBoard(activeTaskBoardWithRuntimeStatus, item.id)}
+                    disabled={taskBoardBusy || activeSessionBusy}
+                  >
+                    <RotateCcw size={14} aria-hidden />
+                    {language === "zh" ? "重试此任务" : "Retry Task"}
+                  </button>
+                </div>
+              ) : null}
             </article>
           ))}
         </div>
@@ -6605,36 +6861,28 @@ function App() {
               <section className="remote-summary">
                 <div>
                   <UserRound size={15} aria-hidden />
-                  <strong>{remoteStatus?.auth.account?.displayName || remoteStatus?.auth.account?.accountId || t.remote.accountLoggedOut}</strong>
+                  <strong>{t.remote.accountLoggedOut}</strong>
                 </div>
                 <small>{remoteStatus?.auth.desktopId || ""}</small>
               </section>
 
               <label>
-                {t.remote.accountTitle}
+                {t.remote.relayUrl}
                 <input
-                  value={loginAccount}
-                  onChange={(event) => setLoginAccount(event.target.value)}
-                  placeholder={t.remote.accountPlaceholder}
+                  value={settings.mobileRelayUrl}
+                  onChange={(event) => updateSetting("mobileRelayUrl", event.target.value)}
+                  placeholder="https://deepseektuidesktop.cn"
                   spellCheck={false}
                 />
               </label>
-              <input
-                value={loginDisplayName}
-                onChange={(event) => setLoginDisplayName(event.target.value)}
-                placeholder={t.remote.displayNamePlaceholder}
-                spellCheck={false}
-              />
-              <div className="remote-actions">
-                <button type="button" className="primary" onClick={loginRemoteAccount}>
-                  <UserRound size={16} aria-hidden />
-                  {t.remote.login}
-                </button>
-                <button type="button" className="secondary" onClick={logoutRemoteAccount} disabled={!remoteStatus?.auth.loggedIn}>
-                  <LogOut size={16} aria-hidden />
-                  {t.remote.logout}
-                </button>
-              </div>
+
+              <section className={remoteStatus?.relay?.connected ? "remote-summary relay-online" : "remote-summary warning"}>
+                <div>
+                  <span className={`dot ${remoteStatus?.relay?.connected ? "live" : ""}`} />
+                  <strong>{remoteStatus?.relay?.connected ? t.remote.relayConnected : t.remote.relayDisconnected}</strong>
+                </div>
+                <small>{remoteStatus?.relay?.lastError || remoteStatus?.relay?.url || t.remote.tokenRequired}</small>
+              </section>
 
               <section className="remote-summary">
                 <div>
@@ -6650,7 +6898,7 @@ function App() {
                   <small>{t.remote.pairingExpires}: {remoteStatus?.auth.pairing?.expiresAt || ""}</small>
                 </div>
               ) : null}
-              <button type="button" className="secondary wide" onClick={startRemotePairing} disabled={!remoteStatus?.auth.loggedIn}>
+              <button type="button" className="secondary wide" onClick={startRemotePairing} disabled={!remoteStatus?.relay?.connected}>
                 <Link2 size={16} aria-hidden />
                 {t.remote.startPairing}
               </button>
@@ -6734,6 +6982,14 @@ function App() {
                 <small>{remoteStatus?.error || t.remote.tokenRequired}</small>
               </section>
 
+              <section className="remote-summary warning">
+                <div>
+                  <CircleAlert size={15} aria-hidden />
+                  <strong>{t.remote.connectionAddress}</strong>
+                </div>
+                <small>{t.remote.localBridgeNote}</small>
+              </section>
+
               <div className="copy-row">
                 <label>{t.remote.connectionAddress}</label>
                 <input value={remoteStatus?.lanUrl || ""} readOnly spellCheck={false} />
@@ -6750,14 +7006,11 @@ function App() {
               </div>
 
               <div className="endpoint-list">
+                <code>WSS /desktop/connect</code>
+                <code>POST /api/v1/pair</code>
                 <code>GET /api/v1/status</code>
-                <code>POST /api/v1/auth/login</code>
-                <code>POST /api/v1/auth/pair</code>
-                <code>GET /api/v1/events</code>
                 <code>POST /api/v1/session/start</code>
                 <code>POST /api/v1/terminal/input</code>
-                <code>POST /api/v1/skills/upsert</code>
-                <code>POST /api/v1/updates/push</code>
               </div>
 
               {remoteStatus?.lastUpdateNotice ? (

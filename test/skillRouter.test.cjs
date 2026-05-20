@@ -1,22 +1,9 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
-const ts = require("typescript");
+const { loadTsModule } = require("./loadTsModule.cjs");
 
 function loadSkillRouter() {
-  const sourcePath = path.join(__dirname, "..", "src", "skillRouter.ts");
-  const source = fs.readFileSync(sourcePath, "utf8");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020
-    }
-  });
-  const module = { exports: {} };
-  const fn = new Function("exports", "module", "require", outputText);
-  fn(module.exports, module, require);
-  return module.exports;
+  return loadTsModule("src/skillRouter.ts");
 }
 
 const baseSettings = {
@@ -46,6 +33,7 @@ test("UI prompts route UI skill and avoid full default injection", () => {
   assert.ok(decision.activeSkillIds.includes("ui-ux-pro-max"));
   assert.ok(decision.activeSkillIds.includes("superpowers"));
   assert.ok(decision.activeSkillIds.length < baseSettings.enabledSkills.length);
+  assert.equal(decision.routeDebug.primaryIntent, "agentic_planning");
 });
 
 test("skill install prompts route the skill downloader", () => {
@@ -61,12 +49,14 @@ test("skill install prompts route the skill downloader", () => {
 test("manual slash routing strips recognized directives", () => {
   const { routeSkillsForPrompt } = loadSkillRouter();
   const decision = routeSkillsForPrompt({
-    prompt: "/ui-ux-pro-max 优化这个按钮布局",
+    prompt: "/ui-ux-pro-max 检查中文界面翻译",
     settings: { ...baseSettings, skillRoutingMode: "manual" }
   });
 
   assert.deepEqual(decision.activeSkillIds, ["ui-ux-pro-max"]);
-  assert.equal(decision.sanitizedPrompt, "优化这个按钮布局");
+  assert.equal(decision.sanitizedPrompt, "检查中文界面翻译");
+  assert.equal(decision.routeDebug.manualOverride, true);
+  assert.ok(!decision.rejectedSkills.some((skill) => skill.skillId === "ui-ux-pro-max"));
 });
 
 test("ordinary coding prompts do not inject every default skill", () => {
@@ -88,4 +78,53 @@ test("sub-agent decomposition prompts route to superpowers", () => {
   });
 
   assert.ok(decision.activeSkillIds.includes("superpowers"));
+  assert.equal(decision.routeDebug.primaryIntent, "agentic_planning");
+});
+
+test("localization review does not route to generic UI skill", () => {
+  const { routeSkillsForPrompt } = loadSkillRouter();
+  const decision = routeSkillsForPrompt({
+    prompt: "检查这个项目的中文界面翻译是否准备",
+    settings: baseSettings
+  });
+
+  assert.deepEqual(decision.intents.map((intent) => intent.id).slice(0, 1), ["localization_review"]);
+  assert.ok(decision.activeSkillIds.includes("superpowers"));
+  assert.ok(!decision.activeSkillIds.includes("ui-ux-pro-max"));
+  assert.ok(decision.rejectedSkills.some((skill) => skill.skillId === "ui-ux-pro-max" && /translation\/localization/.test(skill.reason)));
+});
+
+test("direct translation stays lightweight without skills", () => {
+  const { routeSkillsForPrompt } = loadSkillRouter();
+  const decision = routeSkillsForPrompt({
+    prompt: "把这段英文翻译成中文",
+    settings: baseSettings
+  });
+
+  assert.equal(decision.routeDebug.primaryIntent, "translation_chat");
+  assert.deepEqual(decision.activeSkillIds, []);
+});
+
+test("frontend review routes both UI and review workflow skills", () => {
+  const { routeSkillsForPrompt } = loadSkillRouter();
+  const decision = routeSkillsForPrompt({
+    prompt: "检查这个页面 UI/UX 是否合理",
+    settings: baseSettings
+  });
+
+  assert.equal(decision.routeDebug.primaryIntent, "frontend_review");
+  assert.ok(decision.activeSkillIds.includes("ui-ux-pro-max"));
+  assert.ok(decision.activeSkillIds.includes("superpowers"));
+});
+
+test("routing explanation contains selected candidates and rejected reasons", () => {
+  const { routeSkillsForPrompt } = loadSkillRouter();
+  const decision = routeSkillsForPrompt({
+    prompt: "检查这个项目的中文界面翻译是否准备",
+    settings: baseSettings
+  });
+
+  assert.match(decision.routeDebug.summary, /localization_review/);
+  assert.ok(decision.candidates.some((candidate) => candidate.skillId === "superpowers" && candidate.selected && candidate.score > 0));
+  assert.ok(decision.candidates.some((candidate) => candidate.skillId === "ui-ux-pro-max" && candidate.rejectedReasons.length > 0));
 });

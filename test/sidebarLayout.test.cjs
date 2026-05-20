@@ -43,12 +43,13 @@ test("runtime agent board is hidden until live runtime state exists", () => {
   assert.doesNotMatch(appSource, /mainView === "terminal"/);
 });
 
-test("task board is rendered in the chat surface and executes through board prompt", () => {
+test("task board is rendered in the chat surface and executes through per-item runtime turns", () => {
   const appSource = readFileSync(join(__dirname, "../src/App.tsx"), "utf8");
 
   assert.match(appSource, /const taskBoardPanel = activeTaskBoardWithRuntimeStatus/);
   assert.match(appSource, /\{taskBoardPanel\}\s*\n\s*\{routingPanel\}/);
-  assert.match(appSource, /buildTaskBoardExecutionPrompt\(options\.taskBoard, language\)/);
+  assert.match(appSource, /buildTaskBoardItemExecutionPrompt\(\{/);
+  assert.match(appSource, /nextRunnableTaskBoardItem\(workingBoard\)/);
   assert.match(appSource, /shouldCreateTaskBoard\(\{/);
   assert.match(css, /\.task-board-panel/);
   assert.match(css, /\.task-board-card/);

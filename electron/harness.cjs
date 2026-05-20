@@ -477,6 +477,7 @@ function defaultSettings() {
     mobileBridgeHost: "127.0.0.1",
     mobileBridgePort: 8765,
     mobileBridgeToken: "",
+    mobileRelayUrl: "https://deepseektuidesktop.cn",
     mobileRemoteControlEnabled: false,
     updatePushEnabled: false
   };
@@ -593,6 +594,9 @@ function sanitizeSettings(settings) {
   safeSettings.mobileBridgePort = Number.isInteger(bridgePort) && bridgePort >= 1024 && bridgePort <= 65535
     ? bridgePort
     : 8765;
+  safeSettings.mobileRelayUrl = typeof safeSettings.mobileRelayUrl === "string" && safeSettings.mobileRelayUrl.trim()
+    ? safeSettings.mobileRelayUrl.trim().replace(/\/+$/, "")
+    : "https://deepseektuidesktop.cn";
   if (typeof safeSettings.mobileBridgeToken !== "string" || safeSettings.mobileBridgeToken.length < 20) {
     safeSettings.mobileBridgeToken = createRemoteToken();
   }

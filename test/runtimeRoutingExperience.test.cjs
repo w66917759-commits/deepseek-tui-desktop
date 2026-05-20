@@ -2,21 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
-const ts = require("typescript");
-
-function loadTsModule(filePath) {
-  const source = fs.readFileSync(path.join(__dirname, "..", filePath), "utf8");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020
-    }
-  });
-  const module = { exports: {} };
-  const fn = new Function("exports", "module", "require", outputText);
-  fn(module.exports, module, require);
-  return module.exports;
-}
+const { loadTsModule } = require("./loadTsModule.cjs");
 
 const baseSettings = {
   provider: "deepseek",
@@ -40,7 +26,8 @@ test("long-task performance and user-interaction prompts route to Pro with agent
     prompt: skillRoute.sanitizedPrompt || prompt,
     permissionMode: "agent",
     settings: baseSettings,
-    activeSkillIds: skillRoute.activeSkillIds
+    activeSkillIds: skillRoute.activeSkillIds,
+    routeIntents: skillRoute.intents
   });
 
   assert.ok(skillRoute.activeSkillIds.includes("superpowers"));
@@ -63,7 +50,8 @@ test("sub-agent decomposition prompts route to task board before execution", () 
     prompt: skillRoute.sanitizedPrompt || prompt,
     permissionMode: "agent",
     settings: baseSettings,
-    activeSkillIds: skillRoute.activeSkillIds
+    activeSkillIds: skillRoute.activeSkillIds,
+    routeIntents: skillRoute.intents
   });
 
   assert.ok(skillRoute.activeSkillIds.includes("superpowers"));
@@ -92,4 +80,42 @@ test("sub-agent decomposition prompts route to task board before execution", () 
     }],
     warnings: []
   }, "zh"), /Task board JSON/);
+});
+
+test("task board execution is wired as per-item runtime turns", () => {
+  const appSource = fs.readFileSync(path.join(__dirname, "..", "src", "App.tsx"), "utf8");
+
+  assert.match(appSource, /buildTaskBoardItemExecutionPrompt/);
+  assert.match(appSource, /createRuntimeApiThread/);
+  assert.match(appSource, /startRuntimeApiThreadTurn/);
+  assert.doesNotMatch(appSource, /buildTaskBoardExecutionPrompt\(options\.taskBoard/);
+});
+
+test("localization review route flows into runtime settings without UI skill", () => {
+  const { routeSkillsForPrompt } = loadTsModule("src/skillRouter.ts");
+  const { routeModelForPrompt } = loadTsModule("src/modelRouter.ts");
+  const prompt = "检查这个项目的中文界面翻译是否准备";
+
+  const skillRoute = routeSkillsForPrompt({
+    prompt,
+    settings: baseSettings
+  });
+  const modelRoute = routeModelForPrompt({
+    prompt: skillRoute.sanitizedPrompt || prompt,
+    permissionMode: "agent",
+    settings: baseSettings,
+    activeSkillIds: skillRoute.activeSkillIds,
+    routeIntents: skillRoute.intents
+  });
+  const runtimeSettings = {
+    ...baseSettings,
+    enabledSkills: skillRoute.activeSkillIds,
+    model: modelRoute.apiModel,
+    provider: modelRoute.provider
+  };
+
+  assert.equal(skillRoute.routeDebug.primaryIntent, "localization_review");
+  assert.deepEqual(runtimeSettings.enabledSkills, ["superpowers"]);
+  assert.equal(modelRoute.profile.id, "reviewer");
+  assert.equal(runtimeSettings.model, "deepseek-v4-pro");
 });

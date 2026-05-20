@@ -108,6 +108,50 @@ test("execution prompt carries original task and task board constraints", () => 
   assert.match(prompt, /实现任务板/);
 });
 
+test("parser preserves task registry fields for compatibility", () => {
+  const { parseTaskBoardPlan } = loadTaskDecomposition();
+  const result = parseTaskBoardPlan(JSON.stringify({
+    items: [{
+      id: "implement",
+      title: "实现任务板",
+      goal: "接入任务板执行 prompt",
+      agentRole: "worker",
+      dependencies: [],
+      targetAreas: ["src/App.tsx"],
+      acceptance: ["最终 prompt 包含任务板 JSON"],
+      status: "running",
+      runId: "run-1",
+      runtimeThreadId: "thread-1",
+      runtimeTurnId: "turn-1",
+      blockedReason: "waiting",
+      outputSummary: "partial output",
+      lastActivityAt: "2026-05-20T00:00:00.000Z",
+      completedAt: "2026-05-20T00:01:00.000Z"
+    }],
+    warnings: []
+  }), metadata);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.plan.items[0].runId, "run-1");
+  assert.equal(result.plan.items[0].runtimeThreadId, "thread-1");
+  assert.equal(result.plan.items[0].outputSummary, "partial output");
+});
+
+test("decomposition prompt carries capability summary", () => {
+  const { buildTaskDecompositionPrompt } = loadTaskDecomposition();
+  const prompt = buildTaskDecompositionPrompt({
+    sourcePrompt: "拆解任务",
+    model: "deepseek-v4-pro",
+    activeSkillIds: ["superpowers"],
+    maxSubagents: 5,
+    language: "zh",
+    capabilityContext: "能力上下文：只把 callable 能力视为可用。"
+  });
+
+  assert.match(prompt, /能力上下文/);
+  assert.match(prompt, /Original user request/);
+});
+
 test("runtime status mapping does not mark unmatched items complete", () => {
   const { applyRuntimeStatusToTaskBoard, parseTaskBoardPlan } = loadTaskDecomposition();
   const result = parseTaskBoardPlan(JSON.stringify({

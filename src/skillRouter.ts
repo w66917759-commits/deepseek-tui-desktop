@@ -1,3 +1,6 @@
+import { classifyRouteIntents, primaryRouteIntent, type RouteIntentId, type RouteIntentMatch } from "./routeIntents";
+import { getSkillCapabilitySpec, skillRegistryEntries, type SkillCapabilitySpec } from "./skillRegistry";
+
 export type SkillRoutingMode = "auto" | "manual" | "all";
 
 export interface SkillTemplateLike {
@@ -10,7 +13,35 @@ export interface SkillTemplateLike {
 export interface SkillRouteMatch {
   skillId: string;
   reason: string;
-  source: "manual" | "trigger" | "mode";
+  source: "manual" | "trigger" | "mode" | "registry" | "template";
+  intent?: RouteIntentId;
+  score?: number;
+}
+
+export interface SkillRouteCandidate {
+  skillId: string;
+  score: number;
+  intents: RouteIntentId[];
+  reasons: string[];
+  rejectedReasons: string[];
+  selected: boolean;
+}
+
+export interface RejectedSkillRoute {
+  skillId: string;
+  reason: string;
+  score: number;
+  intents: RouteIntentId[];
+}
+
+export interface SkillRouteDebug {
+  primaryIntent: RouteIntentId;
+  summary: string;
+  manualOverride: boolean;
+  candidateCount: number;
+  selectedCount: number;
+  rejectedCount: number;
+  notes: string[];
 }
 
 export interface SkillRouteDecision {
@@ -18,26 +49,11 @@ export interface SkillRouteDecision {
   sanitizedPrompt: string;
   activeSkillIds: string[];
   matches: SkillRouteMatch[];
+  intents: RouteIntentMatch[];
+  candidates: SkillRouteCandidate[];
+  rejectedSkills: RejectedSkillRoute[];
+  routeDebug: SkillRouteDebug;
 }
-
-const SPECIALIZED_SKILL_TRIGGERS: Record<string, Array<{ pattern: RegExp; reason: string }>> = {
-  "scheduled-task-agent": [
-    { pattern: /定时|自动任务|提醒|每天|每小时|每周|稍后|明天|后天|schedule|scheduled|recurring|remind|later/i, reason: "prompt asks for scheduled or recurring work" }
-  ],
-  "cron-scheduler": [
-    { pattern: /crontab|cron\s+file|raw\s+cron|五字段\s*cron/i, reason: "prompt asks for raw cron handling" }
-  ],
-  "skill-downloader": [
-    { pattern: /安装\s*skill|下载\s*skill|导入\s*skill|更新\s*skill|install\s+(a\s+)?skill|download\s+(a\s+)?skill|import\s+(a\s+)?skill/i, reason: "prompt asks to install or import a skill" }
-  ],
-  "ui-ux-pro-max": [
-    { pattern: /ui|ux|界面|布局|视觉|交互|前端|样式|css|responsive|mobile|design|frontend|react|vue|svelte/i, reason: "prompt is about UI or frontend design" }
-  ]
-};
-
-const SUPERPOWERS_TRIGGERS = [
-  { pattern: /计划|方案|实现|修改|修复|重构|检查|审查|测试|研究|排查|诊断|评估|拆解|子\s*agent|子代理|多代理|分工|并行|多步骤|长任务|性能|瓶颈|卡顿|延迟|实际体验|体验不好|debug|bug|plan|implement|refactor|review|verify|test|fix|diagnose|investigate|decompose|sub-?agent|delegate|parallel agents?|multi-?agent|performance|latency|bottleneck/i, reason: "prompt asks for agentic coding workflow" }
-];
 
 const GENERIC_TEMPLATE_WORDS = new Set([
   "agent",
@@ -57,6 +73,9 @@ const GENERIC_TEMPLATE_WORDS = new Set([
   "workflow",
   "workflows"
 ]);
+
+const SELECTION_THRESHOLD = 28;
+const TEMPLATE_OVERLAP_SCORE = 18;
 
 function enabledSkillSet(settings: Partial<DesktopSettings>) {
   return new Set(Array.isArray(settings.enabledSkills) ? settings.enabledSkills : []);
@@ -108,6 +127,87 @@ function templateTriggeredSkill(template: SkillTemplateLike, prompt: string) {
   return words.find((word) => !GENERIC_TEMPLATE_WORDS.has(word) && haystack.includes(word)) || "";
 }
 
+function patternMatches(patterns: RegExp[], prompt: string) {
+  return patterns.filter((pattern) => pattern.test(prompt)).length;
+}
+
+function scoreRegistryCandidate(spec: SkillCapabilitySpec, prompt: string, intents: RouteIntentMatch[]) {
+  const supportedIntentMatches = intents.filter((intent) => spec.supportedIntents.includes(intent.id));
+  const positiveCount = patternMatches(spec.positivePatterns, prompt);
+  const negativeCount = patternMatches(spec.negativePatterns, prompt);
+  const score = spec.priority
+    + supportedIntentMatches.reduce((total, intent) => total + intent.score, 0)
+    + positiveCount * 16
+    - negativeCount * 40;
+  const reasons = [
+    ...supportedIntentMatches.map((intent) => `${intent.id} intent +${intent.score}`),
+    ...(positiveCount ? [`${positiveCount} positive trigger(s)`] : [])
+  ];
+  const rejectedReasons = negativeCount ? [`${negativeCount} negative trigger(s)`] : [];
+  return {
+    skillId: spec.id,
+    score,
+    intents: supportedIntentMatches.map((intent) => intent.id),
+    reasons,
+    rejectedReasons,
+    selected: false
+  } satisfies SkillRouteCandidate;
+}
+
+function templateCandidate(skillId: string, template: SkillTemplateLike, prompt: string): SkillRouteCandidate | null {
+  const keyword = templateTriggeredSkill(template, prompt);
+  if (!keyword) return null;
+  return {
+    skillId,
+    score: TEMPLATE_OVERLAP_SCORE,
+    intents: [],
+    reasons: [`prompt overlaps skill metadata: ${keyword}`],
+    rejectedReasons: [],
+    selected: false
+  };
+}
+
+function localizationOverridesUi(candidate: SkillRouteCandidate, intents: RouteIntentMatch[]) {
+  if (candidate.skillId !== "ui-ux-pro-max") return false;
+  const intentIds = new Set(intents.map((intent) => intent.id));
+  return intentIds.has("localization_review") || intentIds.has("translation_chat");
+}
+
+function buildDebug(
+  mode: SkillRoutingMode,
+  intents: RouteIntentMatch[],
+  candidates: SkillRouteCandidate[],
+  manualIds: string[],
+  notes: string[]
+): SkillRouteDebug {
+  const selectedCount = candidates.filter((candidate) => candidate.selected).length;
+  const rejectedCount = candidates.filter((candidate) => candidate.rejectedReasons.length > 0).length;
+  const primaryIntent = primaryRouteIntent(intents);
+  return {
+    primaryIntent,
+    summary: `${primaryIntent}; selected ${selectedCount}/${candidates.length} skill candidate(s)`,
+    manualOverride: mode === "manual" && manualIds.length > 0,
+    candidateCount: candidates.length,
+    selectedCount,
+    rejectedCount,
+    notes
+  };
+}
+
+function emptyDecision(mode: SkillRoutingMode, sanitizedPrompt: string, intents: RouteIntentMatch[]): SkillRouteDecision {
+  const candidates: SkillRouteCandidate[] = [];
+  return {
+    mode,
+    sanitizedPrompt,
+    activeSkillIds: [],
+    matches: [],
+    intents,
+    candidates,
+    rejectedSkills: [],
+    routeDebug: buildDebug(mode, intents, candidates, [], ["skills disabled"])
+  };
+}
+
 export function routeSkillsForPrompt(options: {
   prompt: string;
   workspacePath?: string;
@@ -117,64 +217,136 @@ export function routeSkillsForPrompt(options: {
   const mode = (options.settings.skillRoutingMode || "auto") as SkillRoutingMode;
   const enabled = enabledSkillSet(options.settings);
   const templates = options.skillTemplates || {};
-  const knownSkillIds = new Set([...enabled, ...Object.keys(templates)]);
+  const registryIds = skillRegistryEntries().map((spec) => spec.id);
+  const knownSkillIds = new Set([...enabled, ...Object.keys(templates), ...registryIds]);
   const manualIds = manualSkillIds(options.prompt, knownSkillIds).filter((id) => enabled.has(id));
   const sanitizedPrompt = stripManualDirectives(options.prompt, manualIds);
+  const prompt = sanitizedPrompt || options.prompt;
+  const intents = classifyRouteIntents(prompt);
 
   if (options.settings.skillsEnabled === false) {
-    return { mode, sanitizedPrompt, activeSkillIds: [], matches: [] };
+    return emptyDecision(mode, sanitizedPrompt, intents);
   }
 
   const matches: SkillRouteMatch[] = [];
   for (const id of manualIds) {
-    addMatch(matches, { skillId: id, reason: "manual /skill directive", source: "manual" });
+    addMatch(matches, {
+      skillId: id,
+      reason: "manual /skill directive",
+      source: "manual",
+      score: Number.POSITIVE_INFINITY
+    });
   }
 
+  const notes: string[] = [];
+  const candidates = Array.from(enabled).map((skillId) => {
+    const spec = getSkillCapabilitySpec(skillId);
+    const registryCandidate = spec ? scoreRegistryCandidate(spec, prompt, intents) : null;
+    const metadataCandidate = templates[skillId] ? templateCandidate(skillId, templates[skillId], prompt) : null;
+    const candidate = registryCandidate || metadataCandidate || {
+      skillId,
+      score: 0,
+      intents: [],
+      reasons: [],
+      rejectedReasons: [],
+      selected: false
+    };
+    if (registryCandidate && metadataCandidate) {
+      candidate.score += metadataCandidate.score;
+      candidate.reasons.push(...metadataCandidate.reasons);
+    }
+    if (localizationOverridesUi(candidate, intents) && !manualIds.includes(candidate.skillId)) {
+      candidate.rejectedReasons.push("translation/localization intent overrides generic UI keyword");
+      notes.push("translation/localization intent suppressed ui-ux-pro-max");
+    }
+    if (manualIds.includes(candidate.skillId) && candidate.rejectedReasons.length > 0) {
+      candidate.reasons.push(`manual override ignored rejection: ${candidate.rejectedReasons.join("; ")}`);
+      candidate.rejectedReasons = [];
+      notes.push(`manual override kept ${candidate.skillId}`);
+    }
+    return candidate;
+  });
+
   if (mode === "all") {
+    for (const candidate of candidates) candidate.selected = true;
     return {
       mode,
       sanitizedPrompt,
       activeSkillIds: Array.from(enabled),
-      matches: Array.from(enabled).map((skillId) => ({ skillId, reason: "all mode keeps every selected skill active", source: "mode" }))
+      matches: Array.from(enabled).map((skillId) => ({
+        skillId,
+        reason: "all mode keeps every selected skill active",
+        source: "mode",
+        score: candidates.find((candidate) => candidate.skillId === skillId)?.score
+      })),
+      intents,
+      candidates,
+      rejectedSkills: candidates
+        .filter((candidate) => candidate.rejectedReasons.length > 0)
+        .map((candidate) => ({
+          skillId: candidate.skillId,
+          reason: candidate.rejectedReasons.join("; "),
+          score: candidate.score,
+          intents: candidate.intents
+        })),
+      routeDebug: buildDebug(mode, intents, candidates, manualIds, notes)
     };
   }
 
   if (mode === "manual") {
-    return { mode, sanitizedPrompt, activeSkillIds: matches.map((match) => match.skillId), matches };
-  }
-
-  const prompt = sanitizedPrompt || options.prompt;
-  let specializedMatched = false;
-  for (const [skillId, triggers] of Object.entries(SPECIALIZED_SKILL_TRIGGERS)) {
-    if (!enabled.has(skillId)) continue;
-    const trigger = triggers.find((candidate) => candidate.pattern.test(prompt));
-    if (!trigger) continue;
-    specializedMatched = true;
-    addMatch(matches, { skillId, reason: trigger.reason, source: "trigger" });
-  }
-
-  for (const [skillId, template] of Object.entries(templates)) {
-    if (!enabled.has(skillId) || matches.some((match) => match.skillId === skillId)) continue;
-    const keyword = templateTriggeredSkill(template, prompt);
-    if (keyword) {
-      specializedMatched = true;
-      addMatch(matches, { skillId, reason: `prompt overlaps skill metadata: ${keyword}`, source: "trigger" });
+    for (const candidate of candidates) {
+      candidate.selected = manualIds.includes(candidate.skillId);
+      if (candidate.selected) candidate.reasons.push("manual override");
     }
+    return {
+      mode,
+      sanitizedPrompt,
+      activeSkillIds: matches.map((match) => match.skillId),
+      matches,
+      intents,
+      candidates,
+      rejectedSkills: candidates
+        .filter((candidate) => candidate.rejectedReasons.length > 0)
+        .map((candidate) => ({
+          skillId: candidate.skillId,
+          reason: candidate.rejectedReasons.join("; "),
+          score: candidate.score,
+          intents: candidate.intents
+        })),
+      routeDebug: buildDebug(mode, intents, candidates, manualIds, notes)
+    };
   }
 
-  const superpowersTrigger = SUPERPOWERS_TRIGGERS.find((candidate) => candidate.pattern.test(prompt));
-  if (
-    enabled.has("superpowers")
-    && superpowersTrigger
-    && (!specializedMatched || /计划|方案|研究|排查|诊断|评估|拆解|子\s*agent|子代理|多代理|分工|并行|多步骤|长任务|性能|瓶颈|卡顿|延迟|实际体验|体验不好|plan|review|审查|diagnose|investigate|decompose|sub-?agent|delegate|parallel agents?|multi-?agent|performance|latency|bottleneck/i.test(prompt))
-  ) {
-    addMatch(matches, { skillId: "superpowers", reason: superpowersTrigger.reason, source: "trigger" });
+  for (const candidate of candidates) {
+    candidate.selected = manualIds.includes(candidate.skillId)
+      || (candidate.score >= SELECTION_THRESHOLD && candidate.rejectedReasons.length === 0);
+    if (!candidate.selected) continue;
+    addMatch(matches, {
+      skillId: candidate.skillId,
+      reason: candidate.reasons.join("; ") || "selected by route registry",
+      source: manualIds.includes(candidate.skillId) ? "manual" : "registry",
+      intent: candidate.intents[0],
+      score: candidate.score
+    });
   }
+
+  const rejectedSkills = candidates
+    .filter((candidate) => candidate.rejectedReasons.length > 0)
+    .map((candidate) => ({
+      skillId: candidate.skillId,
+      reason: candidate.rejectedReasons.join("; "),
+      score: candidate.score,
+      intents: candidate.intents
+    }));
 
   return {
     mode,
     sanitizedPrompt,
     activeSkillIds: matches.map((match) => match.skillId),
-    matches
+    matches,
+    intents,
+    candidates,
+    rejectedSkills,
+    routeDebug: buildDebug(mode, intents, candidates, manualIds, notes)
   };
 }
