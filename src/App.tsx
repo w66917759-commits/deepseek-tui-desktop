@@ -74,13 +74,26 @@ import {
 import { deriveInteractionState, type DeriveInteractionStateOptions, type InteractionPhase, type InteractionState } from "./interactionState";
 import { buildRuntimeTimeline, type RuntimeTimeline, type RuntimeTimelineEntry } from "./runtimeTimeline";
 import { routeSkillsForPrompt, type SkillRouteDecision } from "./skillRouter";
+import { buildCapabilityContext, buildCapabilityRecords } from "./capabilityRegistry";
 import {
   applyRuntimeStatusToTaskBoard,
-  buildTaskBoardExecutionPrompt,
   buildTaskDecompositionPrompt,
   parseTaskBoardPlan,
   shouldCreateTaskBoard
 } from "./taskDecomposition";
+import {
+  applyTaskBoardRuntimeDetails,
+  applyTaskRuntimeDetail,
+  bindTaskBoardItemRuntime,
+  buildTaskBoardItemExecutionPrompt,
+  createTaskBoardRunId,
+  nextRunnableTaskBoardItem,
+  normalizeTaskBoardPlans as normalizeRegistryTaskBoardPlans,
+  propagateBlockedTaskItems,
+  queueTaskBoardItem,
+  resetTaskBoardItemForRetry,
+  taskBoardRunSummary
+} from "./taskRegistry";
 
 type InspectorPanel = "skills" | "remote" | "git" | "settings" | null;
 type MainView = "chat" | "tools" | "tasks";
@@ -2031,6 +2044,10 @@ function latestRuntimeAssistantText(detail: RuntimeApiThreadDetail | null | unde
     .at(-1)?.content || "";
 }
 
+function waitForMs(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function RunningActivityMark({ compact = false }: { compact?: boolean }) {
   return (
     <span className={compact ? "running-activity-mark compact" : "running-activity-mark"} aria-hidden>
@@ -2100,26 +2117,7 @@ function sanitizeConversationMessages(messages: ChatMessage[], language: AppLang
 }
 
 function normalizeTaskBoardList(value: unknown): TaskBoardPlan[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((candidate): candidate is TaskBoardPlan => {
-    if (!candidate || typeof candidate !== "object") return false;
-    const board = candidate as Partial<TaskBoardPlan>;
-    return Boolean(
-      board.id
-      && board.sourcePrompt
-      && Array.isArray(board.items)
-      && board.items.every((item) => (
-        item
-        && typeof item.id === "string"
-        && typeof item.title === "string"
-        && typeof item.goal === "string"
-        && typeof item.agentRole === "string"
-        && Array.isArray(item.dependencies)
-        && Array.isArray(item.targetAreas)
-        && Array.isArray(item.acceptance)
-      ))
-    );
-  });
+  return normalizeRegistryTaskBoardPlans(value);
 }
 
 function activeTaskBoardForSession(session: ConversationSession | null | undefined) {
@@ -2690,11 +2688,29 @@ function App() {
     )),
     [conversationStore.activeSessionId, runtimeOrchestratorSnapshot.turns]
   );
+  const capabilityRecords = useMemo(
+    () => buildCapabilityRecords({
+      skills: runtimeApiSkills,
+      mcpServers: runtimeApiMcpServers,
+      settings
+    }),
+    [runtimeApiMcpServers, runtimeApiSkills, settings]
+  );
+  const capabilityContext = useMemo(
+    () => buildCapabilityContext(capabilityRecords, language),
+    [capabilityRecords, language]
+  );
   const activeTaskBoardWithRuntimeStatus = useMemo(
-    () => activeTaskBoard
-      ? applyRuntimeStatusToTaskBoard(activeTaskBoard, runtimeSnapshot.agents || [], activeSessionRuntimeTurns)
-      : null,
-    [activeSessionRuntimeTurns, activeTaskBoard, runtimeSnapshot.agents]
+    () => {
+      if (!activeTaskBoard) return null;
+      const runtimePlan = applyRuntimeStatusToTaskBoard(activeTaskBoard, runtimeSnapshot.agents || [], activeSessionRuntimeTurns);
+      return applyTaskBoardRuntimeDetails(runtimePlan, runtimeThreadDetails);
+    },
+    [activeSessionRuntimeTurns, activeTaskBoard, runtimeSnapshot.agents, runtimeThreadDetails]
+  );
+  const activeTaskBoardSummary = useMemo(
+    () => activeTaskBoardWithRuntimeStatus ? taskBoardRunSummary(activeTaskBoardWithRuntimeStatus) : null,
+    [activeTaskBoardWithRuntimeStatus]
   );
   const activeRuntimeApiBusy = useMemo(
     () => activeRuntimeThreadDetail?.turns.some((turn) => ACTIVE_RUNTIME_API_TURN_STATUSES.has(turn.status)) || false,
@@ -2716,17 +2732,17 @@ function App() {
     runtimeSnapshot,
     runtimeApiStatus,
     runtimeEvents,
-    selectedCapabilities: runtimeApiMcpServers,
+    selectedCapabilities: capabilityRecords,
     processStreamEnabled,
     nowMs: interactionNow
   }), [
     activeRuntimeThreadDetail,
     activeSessionRuntimeTurns,
     activeSessionTerminalRunning,
+    capabilityRecords,
     hasGlobalApiKey,
     interactionNow,
     processStreamEnabled,
-    runtimeApiMcpServers,
     runtimeApiStatus,
     runtimeEvents,
     runtimeSnapshot,
@@ -3330,13 +3346,16 @@ function App() {
       prompt: skillRoute.sanitizedPrompt || prompt,
       permissionMode: mode,
       settings: sourceSettings,
-      activeSkillIds: skillRoute.activeSkillIds
+      activeSkillIds: skillRoute.activeSkillIds,
+      routeIntents: skillRoute.intents
     });
     setLastSkillRoute(skillRoute);
     setLastModelRoute(modelRoute);
     setDesktopHookEvents((events) => appendDesktopHookEvent(events, "afterSkillRoute", "Skill route resolved", {
       activeSkillIds: skillRoute.activeSkillIds,
-      model: modelRoute.apiModel
+      intents: skillRoute.intents.map((intent) => intent.id),
+      model: modelRoute.apiModel,
+      routeDebug: skillRoute.routeDebug.summary
     }));
     return {
       skillRoute,
@@ -4211,7 +4230,6 @@ function App() {
     prompt?: string;
     clearComposer?: boolean;
     skipTaskBoard?: boolean;
-    taskBoard?: TaskBoardPlan;
   }) => {
     const prompt = String(options?.prompt ?? agentPrompt).trim();
     if (!prompt) return;
@@ -4236,16 +4254,19 @@ function App() {
       ...routing.runtimeSettings,
       processStreamEnabled
     });
-    const shouldPrepareTaskBoard = !options?.skipTaskBoard && !options?.taskBoard && shouldCreateTaskBoard({
+    const shouldPrepareTaskBoard = !options?.skipTaskBoard && shouldCreateTaskBoard({
       prompt,
       permissionMode,
       skillRoutingMode: baseRuntimeSettings.skillRoutingMode,
       activeSkillIds: routing.skillRoute.activeSkillIds
     });
-    const displayPrompt = options?.taskBoard ? options.taskBoard.sourcePrompt : prompt;
-    const finalRuntimePrompt = options?.taskBoard
-      ? buildTaskBoardExecutionPrompt(options.taskBoard, language)
-      : routing.prompt;
+    const displayPrompt = prompt;
+    const finalRuntimePrompt = [
+      capabilityContext,
+      "",
+      "User request:",
+      routing.prompt
+    ].join("\n");
 
     let pendingMessages: ChatMessage[] = currentSession.messages;
     commitConversationStore((current) => {
@@ -4328,7 +4349,8 @@ function App() {
           model: routing.modelRoute.apiModel,
           activeSkillIds: routing.skillRoute.activeSkillIds,
           maxSubagents: runtimeSettings.maxSubagents,
-          language
+          language,
+          capabilityContext
         });
         const result = await desktop.startRuntimeApiThreadTurn({
           conversationId: targetSessionId,
@@ -4370,12 +4392,13 @@ function App() {
             ? "已生成任务拆解工作台。确认后可以按任务板执行，或跳过任务板直接执行原任务。"
             : "Task board generated. You can execute from the board or skip it and run the original task directly."
         };
+        const preparedPlan = propagateBlockedTaskItems(parsed.plan);
         commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
           ...session,
           runtimeThreadId: result.threadId,
           updatedAt: new Date().toISOString(),
-          taskBoards: [...normalizeTaskBoardList(session.taskBoards), parsed.plan],
-          activeTaskBoardId: parsed.plan.id,
+          taskBoards: [...normalizeTaskBoardList(session.taskBoards), preparedPlan],
+          activeTaskBoardId: preparedPlan.id,
           messages: [...session.messages.filter((message) => message.content !== (language === "zh" ? "正在等待运行时回复…" : "Waiting for runtime response...")), assistantMessage]
         })));
         if (activeSessionIdRef.current === targetSessionId) {
@@ -4387,19 +4410,6 @@ function App() {
         setTaskBoardMessage(language === "zh" ? "任务板已生成。" : "Task board generated.");
         setStatus({ type: "exited", exitCode: 0 });
         return;
-      }
-
-      if (options?.taskBoard) {
-        const queuedBoard: TaskBoardPlan = {
-          ...options.taskBoard,
-          items: options.taskBoard.items.map((item) => ({ ...item, status: item.status === "completed" ? "completed" : "queued" }))
-        };
-        commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => ({
-          ...session,
-          updatedAt: new Date().toISOString(),
-          taskBoards: normalizeTaskBoardList(session.taskBoards).map((board) => board.id === queuedBoard.id ? queuedBoard : board),
-          activeTaskBoardId: queuedBoard.id
-        })));
       }
 
       const runtimePrompt = buildAnchoredRuntimePrompt(finalRuntimePrompt, currentSession.contextAnchors || [], language);
@@ -4435,16 +4445,196 @@ function App() {
     } finally {
       setTaskBoardBusy(false);
     }
-  }, [agentPrompt, apiKey, applyConversationStore, commitConversationStore, conversationStore, desktop, interactionStateBase, language, permissionMode, processStreamEnabled, renderTerminalForSession, routePromptForRun, selectedModelApiName, settings, syncRuntimeDetailAnchors, t]);
+  }, [agentPrompt, apiKey, applyConversationStore, capabilityContext, commitConversationStore, conversationStore, desktop, interactionStateBase, language, permissionMode, processStreamEnabled, renderTerminalForSession, routePromptForRun, selectedModelApiName, settings, syncRuntimeDetailAnchors, t]);
 
-  const executeTaskBoard = useCallback(async (board: TaskBoardPlan) => {
-    await sendPrompt({
-      prompt: board.sourcePrompt,
-      taskBoard: board,
-      skipTaskBoard: true,
-      clearComposer: false
+  const executeTaskBoard = useCallback(async (board: TaskBoardPlan, retryItemId = "") => {
+    if (taskBoardBusy || activeSessionBusy) return;
+    let currentSession = findConversationSession(conversationStore, conversationStore.activeSessionId)
+      || createConversationSession(settings.workspacePath, language, [createWelcomeMessage(language)]);
+    if (!findConversationSession(conversationStore, currentSession.id)) {
+      applyConversationStore(upsertConversationSession(conversationStore, currentSession, language));
+    }
+    const targetSessionId = currentSession.id;
+    const runtimeModel = board.model || selectedModelApiName;
+    const runtimeSettings = normalizeSettings({
+      ...settings,
+      model: runtimeModel,
+      enabledSkills: board.activeSkillIds.length > 0 ? board.activeSkillIds : settings.enabledSkills,
+      processStreamEnabled
     });
-  }, [sendPrompt]);
+    const permissionModeForRuntime = permissionMode === "agent" ? "agent" : permissionMode;
+    const saveBoard = (nextBoard: TaskBoardPlan) => {
+      commitConversationStore((current) => updateConversationSession(current, targetSessionId, language, (session) => {
+        const boards = normalizeTaskBoardList(session.taskBoards);
+        const replaced = boards.some((candidate) => candidate.id === nextBoard.id)
+          ? boards.map((candidate) => candidate.id === nextBoard.id ? nextBoard : candidate)
+          : [...boards, nextBoard];
+        return {
+          ...session,
+          updatedAt: new Date().toISOString(),
+          taskBoards: replaced,
+          activeTaskBoardId: nextBoard.id
+        };
+      }));
+    };
+    const failItem = (plan: TaskBoardPlan, itemId: string, reason: string) => propagateBlockedTaskItems({
+      ...plan,
+      items: plan.items.map((item) => item.id === itemId
+        ? {
+          ...item,
+          status: "failed",
+          blockedReason: reason,
+          lastActivityAt: new Date().toISOString(),
+          completedAt: new Date().toISOString()
+        }
+        : item)
+    });
+
+    setTaskBoardBusy(true);
+    setTaskBoardFallbackPrompt("");
+    setStatus({ type: "launching" });
+    const launchApiKey = apiKey.trim();
+    if (launchApiKey) {
+      const keyResult = await desktop.saveApiKey({ provider: runtimeSettings.provider, apiKey: launchApiKey });
+      if (!keyResult.ok) {
+        setTaskBoardBusy(false);
+        setStatus({ type: "error", message: keyResult.error || t.settings.apiKeySaveFailed });
+        return;
+      }
+    }
+
+    try {
+      let workingBoard = applyTaskBoardRuntimeDetails(board, runtimeThreadDetails);
+      if (retryItemId) {
+        workingBoard = resetTaskBoardItemForRetry(workingBoard, retryItemId);
+      }
+      workingBoard = propagateBlockedTaskItems(workingBoard);
+      saveBoard(workingBoard);
+      const runId = createTaskBoardRunId(workingBoard.id);
+      let ranAny = false;
+
+      while (true) {
+        const nextItem = nextRunnableTaskBoardItem(workingBoard);
+        if (!nextItem) break;
+        if (retryItemId && nextItem.id !== retryItemId) break;
+        ranAny = true;
+        workingBoard = queueTaskBoardItem(workingBoard, nextItem.id, runId);
+        saveBoard(workingBoard);
+        setTaskBoardMessage(language === "zh"
+          ? `正在执行任务：${nextItem.title}`
+          : `Running task: ${nextItem.title}`);
+
+        const created = await desktop.createRuntimeApiThread({
+          workspacePath: settings.workspacePath,
+          model: runtimeModel,
+          mode: permissionModeForRuntime,
+          allowShell: runtimeSettings.allowShell,
+          settings: runtimeSettings
+        });
+        if (!created.ok || !created.thread?.id) {
+          workingBoard = failItem(workingBoard, nextItem.id, created.error || t.status.launchFailed);
+          saveBoard(workingBoard);
+          setStatus({ type: "error", message: created.error || t.status.launchFailed });
+          break;
+        }
+
+        const threadId = created.thread.id;
+        workingBoard = bindTaskBoardItemRuntime(workingBoard, nextItem.id, threadId);
+        saveBoard(workingBoard);
+        setRuntimeThreadDetails((current) => current[threadId]
+          ? current
+          : {
+            ...current,
+            [threadId]: {
+              thread: created.thread!,
+              turns: [],
+              items: [],
+              latest_seq: 0
+            }
+          });
+        const currentItem = workingBoard.items.find((item) => item.id === nextItem.id) || nextItem;
+        const itemPrompt = buildTaskBoardItemExecutionPrompt({
+          plan: workingBoard,
+          item: currentItem,
+          language,
+          capabilityContext
+        });
+        const runtimePrompt = buildAnchoredRuntimePrompt(itemPrompt, currentSession.contextAnchors || [], language);
+        const result = await desktop.startRuntimeApiThreadTurn({
+          conversationId: targetSessionId,
+          threadId,
+          workspacePath: settings.workspacePath,
+          prompt: runtimePrompt,
+          model: runtimeModel,
+          mode: permissionModeForRuntime,
+          allowShell: runtimeSettings.allowShell,
+          settings: runtimeSettings
+        });
+        if (!result.ok || !result.threadId || !result.detail) {
+          workingBoard = failItem(workingBoard, nextItem.id, result.error || t.status.launchFailed);
+          saveBoard(workingBoard);
+          setStatus({ type: "error", message: result.error || t.status.launchFailed });
+          break;
+        }
+
+        let latestDetail = result.detail;
+        let detailForState = latestDetail;
+        setRuntimeThreadDetails((current) => ({ ...current, [result.threadId!]: detailForState }));
+        if (result.turn?.id) {
+          workingBoard = bindTaskBoardItemRuntime(workingBoard, nextItem.id, result.threadId, result.turn.id);
+        }
+        while (true) {
+          workingBoard = applyTaskRuntimeDetail(workingBoard, nextItem.id, latestDetail);
+          saveBoard(workingBoard);
+          const observedItem = workingBoard.items.find((item) => item.id === nextItem.id);
+          if (!observedItem || (observedItem.status !== "queued" && observedItem.status !== "running")) break;
+          await waitForMs(1500);
+          const refreshed = await desktop.getRuntimeApiThread({ threadId: result.threadId, settings: runtimeSettings });
+          if (!refreshed.ok || !refreshed.detail) {
+            workingBoard = failItem(workingBoard, nextItem.id, refreshed.error || t.status.launchFailed);
+            saveBoard(workingBoard);
+            setStatus({ type: "error", message: refreshed.error || t.status.launchFailed });
+            break;
+          }
+          latestDetail = refreshed.detail;
+          detailForState = latestDetail;
+          setRuntimeThreadDetails((current) => ({ ...current, [result.threadId!]: detailForState }));
+        }
+        const finishedItem = workingBoard.items.find((item) => item.id === nextItem.id);
+        if (finishedItem?.status !== "completed") {
+          const reason = finishedItem?.blockedReason || (language === "zh" ? "任务未完成。" : "Task did not complete.");
+          setTaskBoardMessage(reason);
+          setStatus(finishedItem?.status === "failed" ? { type: "error", message: reason } : { type: "stopped" });
+          break;
+        }
+        if (retryItemId) break;
+      }
+
+      const summary = taskBoardRunSummary(workingBoard);
+      if (!ranAny) {
+        setTaskBoardMessage(language === "zh"
+          ? "没有可执行任务。请检查依赖、失败或阻塞原因。"
+          : "No runnable task is available. Check dependencies, failures, or blocked reasons.");
+        setStatus({ type: "ready" });
+      } else if (summary.completed === summary.total) {
+        setTaskBoardMessage(language === "zh" ? "任务板已全部完成。" : "Task board completed.");
+        setStatus({ type: "exited", exitCode: 0 });
+      } else if (summary.failed > 0) {
+        setTaskBoardMessage(language === "zh"
+          ? `任务板暂停：${summary.failed} 个失败，${summary.blocked} 个阻塞。`
+          : `Task board paused: ${summary.failed} failed, ${summary.blocked} blocked.`);
+      } else {
+        setTaskBoardMessage(language === "zh"
+          ? `任务板暂停：${summary.completed}/${summary.total} 已完成。`
+          : `Task board paused: ${summary.completed}/${summary.total} completed.`);
+        setStatus({ type: "ready" });
+      }
+    } catch (error) {
+      setStatus({ type: "error", message: error instanceof Error ? error.message : t.status.launchFailed });
+    } finally {
+      setTaskBoardBusy(false);
+    }
+  }, [activeSessionBusy, apiKey, applyConversationStore, capabilityContext, commitConversationStore, conversationStore, desktop, language, permissionMode, processStreamEnabled, runtimeThreadDetails, selectedModelApiName, settings, t, taskBoardBusy]);
 
   const executeOriginalPrompt = useCallback(async (prompt: string) => {
     setTaskBoardFallbackPrompt("");
@@ -4802,13 +4992,26 @@ function App() {
     : "conversation-layout conversation-layout-single";
   const terminalCardClassName = "terminal-card stream-output-card";
   const latestHookEvent = desktopHookEvents.at(-1);
+  const routeIntentText = lastSkillRoute?.intents.length
+    ? lastSkillRoute.intents.map((intent) => `${intent.id} ${intent.score}`).join(", ")
+    : "";
+  const selectedRouteCandidates = (lastSkillRoute?.candidates || [])
+    .filter((candidate) => candidate.selected)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 4);
+  const rejectedRouteSkills = (lastSkillRoute?.rejectedSkills || []).slice(0, 3);
   const routingPanel = lastSkillRoute || lastModelRoute ? (
     <section className="runtime-routing-panel">
       <div>
         <strong>{language === "zh" ? "本轮路由" : "Turn routing"}</strong>
-        <p>{latestHookEvent?.summary || (language === "zh" ? "发送前会按任务选择 Skill 与模型。" : "Skills and model are selected per turn.")}</p>
+        <p>{lastSkillRoute?.routeDebug.summary || latestHookEvent?.summary || (language === "zh" ? "发送前会按任务选择 Skill 与模型。" : "Skills and model are selected per turn.")}</p>
       </div>
       <div className="runtime-routing-chips">
+        {routeIntentText ? (
+          <span className="status-chip">
+            {language === "zh" ? `意图：${routeIntentText}` : `Intent: ${routeIntentText}`}
+          </span>
+        ) : null}
         <span className="status-chip enabled">
           {language === "zh" ? `Skill：${lastSkillRoute?.activeSkillIds.length ? lastSkillRoute.activeSkillIds.join(", ") : "无"}` : `Skills: ${lastSkillRoute?.activeSkillIds.length ? lastSkillRoute.activeSkillIds.join(", ") : "none"}`}
         </span>
@@ -4821,7 +5024,21 @@ function App() {
       {lastSkillRoute?.matches.length ? (
         <div className="runtime-routing-reasons">
           {lastSkillRoute.matches.map((match) => (
-            <small key={`${match.skillId}-${match.source}`}>{match.skillId}: {match.reason}</small>
+            <small key={`${match.skillId}-${match.source}`}>{match.skillId}: {match.reason}{typeof match.score === "number" && Number.isFinite(match.score) ? ` (${match.score})` : ""}</small>
+          ))}
+        </div>
+      ) : null}
+      {selectedRouteCandidates.length || rejectedRouteSkills.length ? (
+        <div className="runtime-routing-reasons">
+          {selectedRouteCandidates.map((candidate) => (
+            <small key={`candidate-${candidate.skillId}`}>
+              {language === "zh" ? "候选" : "Candidate"} {candidate.skillId}: {candidate.score}
+            </small>
+          ))}
+          {rejectedRouteSkills.map((skill) => (
+            <small key={`rejected-${skill.skillId}`}>
+              {language === "zh" ? "排除" : "Rejected"} {skill.skillId}: {skill.reason}
+            </small>
           ))}
         </div>
       ) : null}
@@ -4949,6 +5166,36 @@ function App() {
             <p className="runtime-api-empty">{t.runtimeApi.noMcp}</p>
           )}
         </article>
+
+        <article className="runtime-api-column">
+          <div className="runtime-api-column-title">
+            <Layers3 size={16} aria-hidden />
+            <strong>{language === "zh" ? "能力状态" : "Capabilities"}</strong>
+          </div>
+          {capabilityRecords.length > 0 ? (
+            <div className="runtime-api-list compact">
+              {capabilityRecords.slice(0, 8).map((record) => {
+                const isCallable = record.runtimeState.callable && !record.runtimeState.failed && !record.runtimeState.approvalBlocked;
+                const isWarning = record.runtimeState.selected && !isCallable;
+                return (
+                  <div
+                    key={record.id}
+                    className={`runtime-api-row capability ${isCallable ? "enabled" : ""} ${isWarning ? "warning" : ""}`}
+                  >
+                    <span>
+                      <strong>{record.name}</strong>
+                      <small>{record.kind} · {record.permission} · {record.runtimeState.state}</small>
+                      <small>{record.reason || record.runtimeState.reason || record.description}</small>
+                    </span>
+                    {isCallable ? <CheckCircle2 size={15} aria-hidden /> : <CircleAlert size={15} aria-hidden />}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="runtime-api-empty">{language === "zh" ? "暂无能力记录" : "No capability records"}</p>
+          )}
+        </article>
       </div>
       <div className="runtime-api-approvals">
         <strong>{t.runtimeApi.approvals}</strong>
@@ -5056,8 +5303,8 @@ function App() {
           <h3>{language === "zh" ? "任务拆解工作台" : "Task Board"}</h3>
           <p>{activeTaskBoardWithRuntimeStatus
             ? (language === "zh"
-              ? `已拆解 ${activeTaskBoardWithRuntimeStatus.items.length} 个任务，模型 ${activeTaskBoardWithRuntimeStatus.model}`
-              : `${activeTaskBoardWithRuntimeStatus.items.length} tasks prepared with ${activeTaskBoardWithRuntimeStatus.model}`)
+              ? `已拆解 ${activeTaskBoardWithRuntimeStatus.items.length} 个任务，已完成 ${activeTaskBoardSummary?.completed || 0} 个，模型 ${activeTaskBoardWithRuntimeStatus.model}`
+              : `${activeTaskBoardWithRuntimeStatus.items.length} tasks, ${activeTaskBoardSummary?.completed || 0} completed with ${activeTaskBoardWithRuntimeStatus.model}`)
             : taskBoardMessage}</p>
         </div>
         <div className="task-board-actions">
@@ -5070,7 +5317,7 @@ function App() {
                 disabled={taskBoardBusy || activeSessionBusy}
               >
                 <Bot size={15} aria-hidden />
-                {language === "zh" ? "执行任务板" : "Execute Board"}
+                {language === "zh" ? "继续执行剩余任务" : "Continue Remaining"}
               </button>
               <button
                 type="button"
@@ -5115,9 +5362,41 @@ function App() {
                 <span>{language === "zh" ? "依赖" : "Deps"}: {item.dependencies.length ? item.dependencies.join(", ") : "-"}</span>
                 <span>{language === "zh" ? "范围" : "Areas"}: {item.targetAreas.join(", ")}</span>
               </div>
+              {item.runtimeThreadId || item.runtimeTurnId || item.runId ? (
+                <div className="task-board-runtime-meta">
+                  {item.runId ? <code>run {item.runId}</code> : null}
+                  {item.runtimeThreadId ? <code>thread {item.runtimeThreadId}</code> : null}
+                  {item.runtimeTurnId ? <code>turn {item.runtimeTurnId}</code> : null}
+                </div>
+              ) : null}
+              {item.outputSummary ? (
+                <p className="task-board-output">
+                  <strong>{language === "zh" ? "输出" : "Output"}</strong>
+                  {item.outputSummary}
+                </p>
+              ) : null}
+              {item.blockedReason ? (
+                <p className="task-board-blocked">
+                  <strong>{language === "zh" ? "阻塞" : "Blocked"}</strong>
+                  {item.blockedReason}
+                </p>
+              ) : null}
               <ul>
                 {item.acceptance.slice(0, 3).map((check) => <li key={check}>{check}</li>)}
               </ul>
+              {(item.status === "failed" || item.status === "blocked") ? (
+                <div className="task-board-card-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void executeTaskBoard(activeTaskBoardWithRuntimeStatus, item.id)}
+                    disabled={taskBoardBusy || activeSessionBusy}
+                  >
+                    <RotateCcw size={14} aria-hidden />
+                    {language === "zh" ? "重试此任务" : "Retry Task"}
+                  </button>
+                </div>
+              ) : null}
             </article>
           ))}
         </div>

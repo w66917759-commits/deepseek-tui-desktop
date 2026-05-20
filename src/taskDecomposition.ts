@@ -98,6 +98,7 @@ export function buildTaskDecompositionPrompt(options: {
   activeSkillIds: string[];
   maxSubagents: number;
   language: AppLanguage;
+  capabilityContext?: string;
 }) {
   const maxSubagents = Math.max(1, Math.min(20, Number(options.maxSubagents) || 10));
   const languageInstruction = options.language === "zh"
@@ -135,10 +136,12 @@ export function buildTaskDecompositionPrompt(options: {
     "",
     `Active skills: ${options.activeSkillIds.join(", ") || "none"}`,
     `Model: ${options.model}`,
+    options.capabilityContext ? "" : "",
+    options.capabilityContext ? options.capabilityContext : "",
     "",
     "Original user request:",
     options.sourcePrompt
-  ].join("\n");
+  ].filter((line, index, lines) => line !== "" || lines[index - 1] !== "").join("\n");
 }
 
 export function parseTaskBoardPlan(raw: string, metadata: TaskBoardMetadata): TaskBoardParseResult {
@@ -186,7 +189,14 @@ export function parseTaskBoardPlan(raw: string, metadata: TaskBoardMetadata): Ta
       dependencies: stringList(item.dependencies),
       targetAreas,
       acceptance,
-      status: normalizeItemStatus(item.status)
+      status: normalizeItemStatus(item.status),
+      runId: stringField(item.runId) || undefined,
+      runtimeThreadId: stringField(item.runtimeThreadId) || undefined,
+      runtimeTurnId: stringField(item.runtimeTurnId) || undefined,
+      blockedReason: stringField(item.blockedReason) || undefined,
+      outputSummary: stringField(item.outputSummary) || undefined,
+      lastActivityAt: stringField(item.lastActivityAt) || undefined,
+      completedAt: stringField(item.completedAt) || undefined
     });
   }
 

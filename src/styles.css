@@ -1052,7 +1052,9 @@ label {
 }
 
 .task-board-card-top,
-.task-board-meta {
+.task-board-meta,
+.task-board-runtime-meta,
+.task-board-card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -1105,6 +1107,47 @@ label {
   font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.task-board-output,
+.task-board-blocked {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.task-board-blocked {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.task-board-output strong,
+.task-board-blocked strong {
+  font-size: 11px;
+  color: inherit;
+}
+
+.task-board-runtime-meta code {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: #f2f4f7;
+  color: #475467;
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-board-card-actions {
+  justify-content: flex-end;
+}
+
+.task-board-card-actions button {
+  min-height: 30px;
 }
 
 .task-board-card ul {
@@ -3297,7 +3340,7 @@ label {
 
 .runtime-api-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 10px;
 }
 
@@ -3375,6 +3418,11 @@ button.runtime-api-row {
 .runtime-api-row.enabled {
   border-color: #c3e9dd;
   background: #f5fbf8;
+}
+
+.runtime-api-row.warning {
+  border-color: #fed7aa;
+  background: #fff7ed;
 }
 
 .runtime-api-row span:first-child {

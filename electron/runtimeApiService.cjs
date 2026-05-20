@@ -1,8 +1,10 @@
 const { EventEmitter } = require("events");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
+const fs = require("fs");
 const http = require("http");
 const net = require("net");
+const path = require("path");
 
 const HOST = "127.0.0.1";
 const START_TIMEOUT_MS = 15_000;
@@ -19,6 +21,50 @@ function trimError(error) {
   if (!error) return "";
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function isRuntimeItemPath(filePath) {
+  const normalized = path.normalize(String(filePath || ""));
+  if (!/^item_[A-Za-z0-9_-]+\.json$/.test(path.basename(normalized))) return false;
+  const itemsDir = path.dirname(normalized);
+  const runtimeDir = path.dirname(itemsDir);
+  const tasksDir = path.dirname(runtimeDir);
+  return (
+    path.basename(itemsDir) === "items"
+    && path.basename(runtimeDir) === "runtime"
+    && path.basename(tasksDir) === "tasks"
+  );
+}
+
+function extractRuntimeItemParseFailurePath(error) {
+  const message = trimError(error);
+  const match = message.match(/Failed to parse ([^\n\r"'}]+[/\\]tasks[/\\]runtime[/\\]items[/\\]item_[A-Za-z0-9_-]+\.json)/);
+  const filePath = match ? match[1].trim() : "";
+  return isRuntimeItemPath(filePath) ? path.normalize(filePath) : "";
+}
+
+function safeTimestampForFileName(value = nowIso()) {
+  return String(value).replace(/[^0-9A-Za-z_-]+/g, "").slice(0, 24) || String(Date.now());
+}
+
+function quarantineMalformedRuntimeItem(filePath) {
+  const normalized = path.normalize(String(filePath || ""));
+  if (!isRuntimeItemPath(normalized) || !fs.existsSync(normalized)) return null;
+
+  const runtimeDir = path.dirname(path.dirname(normalized));
+  const quarantineDir = path.join(runtimeDir, "items.invalid");
+  fs.mkdirSync(quarantineDir, { recursive: true });
+
+  const baseName = path.basename(normalized);
+  let targetPath = path.join(quarantineDir, baseName);
+  if (fs.existsSync(targetPath)) {
+    targetPath = path.join(quarantineDir, `${baseName}.${safeTimestampForFileName()}`);
+  }
+  fs.renameSync(normalized, targetPath);
+  return {
+    source: normalized,
+    target: targetPath
+  };
 }
 
 function findFreePort(host = HOST) {
@@ -805,6 +851,56 @@ class RuntimeApiService extends EventEmitter {
     });
   }
 
+  async repairMalformedRuntimeItemsFromError(error, maxAttempts = 100) {
+    let currentError = error;
+    const quarantined = [];
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const failedPath = extractRuntimeItemParseFailurePath(currentError);
+      if (!failedPath) {
+        throw currentError;
+      }
+
+      const quarantineResult = quarantineMalformedRuntimeItem(failedPath);
+      if (quarantineResult) {
+        quarantined.push(quarantineResult);
+        this.lastStderr = `Quarantined malformed runtime item: ${path.basename(quarantineResult.source)}`;
+        this.emitStatus();
+      }
+
+      try {
+        await this.requestJson("/v1/threads/summary?include_archived=true");
+        return quarantined;
+      } catch (nextError) {
+        currentError = nextError;
+      }
+    }
+
+    throw currentError;
+  }
+
+  async repairRuntimeItemStoreIfNeeded() {
+    try {
+      await this.requestJson("/v1/threads/summary?include_archived=true");
+    } catch (error) {
+      if (!extractRuntimeItemParseFailurePath(error)) return [];
+      return this.repairMalformedRuntimeItemsFromError(error);
+    }
+    return [];
+  }
+
+  async requestJsonWithRuntimeItemRepair(pathname, options = {}) {
+    try {
+      return await this.requestJson(pathname, options);
+    } catch (error) {
+      if (!extractRuntimeItemParseFailurePath(error)) {
+        throw error;
+      }
+      await this.repairMalformedRuntimeItemsFromError(error);
+      return this.requestJson(pathname, options);
+    }
+  }
+
   async getStatus(settings) {
     await this.ensureStarted(settings);
     return this.snapshot();
@@ -832,7 +928,7 @@ class RuntimeApiService extends EventEmitter {
 
   async listThreads(settings) {
     await this.ensureStarted(settings);
-    const threads = await this.requestJson("/v1/threads/summary?include_archived=true");
+    const threads = await this.requestJsonWithRuntimeItemRepair("/v1/threads/summary?include_archived=true");
     return {
       ok: true,
       threads: Array.isArray(threads) ? threads : []
@@ -860,7 +956,7 @@ class RuntimeApiService extends EventEmitter {
     }
     await this.ensureStarted(payload.settings);
     const detail = normalizeThreadDetail(
-      await this.requestJson(`/v1/threads/${encodeURIComponent(threadId)}`),
+      await this.requestJsonWithRuntimeItemRepair(`/v1/threads/${encodeURIComponent(threadId)}`),
       threadId
     );
     this.threadDetails.set(threadId, detail);
@@ -874,7 +970,7 @@ class RuntimeApiService extends EventEmitter {
       return { ok: false, error: "Missing thread id" };
     }
     await this.ensureStarted(payload.settings);
-    const thread = await this.requestJson(`/v1/threads/${encodeURIComponent(threadId)}/resume`, {
+    const thread = await this.requestJsonWithRuntimeItemRepair(`/v1/threads/${encodeURIComponent(threadId)}/resume`, {
       method: "POST",
       body: {}
     });
@@ -926,6 +1022,7 @@ class RuntimeApiService extends EventEmitter {
 
   async startThreadTurn(payload = {}) {
     await this.ensureStarted(payload.settings);
+    await this.repairRuntimeItemStoreIfNeeded();
     const threadId = await this.ensureConversationThread(payload);
     const merged = this.readSettings(payload.settings);
     const turnResult = await this.requestJson(`/v1/threads/${encodeURIComponent(threadId)}/turns`, {
@@ -940,7 +1037,7 @@ class RuntimeApiService extends EventEmitter {
       }
     });
     const detail = normalizeThreadDetail(
-      await this.requestJson(`/v1/threads/${encodeURIComponent(threadId)}`),
+      await this.requestJsonWithRuntimeItemRepair(`/v1/threads/${encodeURIComponent(threadId)}`),
       threadId
     );
     this.threadDetails.set(threadId, detail);
@@ -1133,5 +1230,8 @@ module.exports = {
   RuntimeApiService,
   applyRuntimeThreadEventSnapshot,
   deriveRuntimeCapabilityState,
-  findFreePort
+  extractRuntimeItemParseFailurePath,
+  findFreePort,
+  isRuntimeItemPath,
+  quarantineMalformedRuntimeItem
 };

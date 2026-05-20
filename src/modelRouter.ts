@@ -1,3 +1,5 @@
+import type { RouteIntentMatch } from "./routeIntents";
+
 export type ModelProfileId = "interactive" | "planner" | "reviewer" | "long-horizon" | "fallback" | "custom";
 export type ModelRoutingMode = "auto" | "manual";
 
@@ -83,16 +85,24 @@ function manualProfile(settings: Partial<DesktopSettings>): ModelProfile {
   };
 }
 
-function autoProfile(prompt: string, permissionMode: string | undefined, activeSkillIds: string[]) {
+function routeIntentIds(routeIntents: RouteIntentMatch[] | undefined) {
+  return new Set((routeIntents || []).map((intent) => intent.id));
+}
+
+function autoProfile(prompt: string, permissionMode: string | undefined, activeSkillIds: string[], routeIntents?: RouteIntentMatch[]) {
+  const intents = routeIntentIds(routeIntents);
   if (
     activeSkillIds.includes("scheduled-task-agent")
     || activeSkillIds.includes("cron-scheduler")
     || activeSkillIds.includes("skill-downloader")
+    || intents.has("scheduled_task")
+    || intents.has("skill_management")
   ) {
     return modelProfiles.interactive;
   }
-  if (/review|审查|代码审查|检查|verify|验证|测试|test/i.test(prompt)) return modelProfiles.reviewer;
-  if (permissionMode === "plan" || /计划|方案|规划|拆解|子\s*agent|子代理|多代理|分工|并行|plan|decompose|sub-?agent|delegate|parallel agents?|multi-?agent/i.test(prompt)) return modelProfiles.planner;
+  if (intents.has("translation_chat") && activeSkillIds.length === 0) return modelProfiles.interactive;
+  if (permissionMode === "plan" || intents.has("agentic_planning") || /计划|方案|规划|拆解|子\s*agent|子代理|多代理|分工|并行|plan|decompose|sub-?agent|delegate|parallel agents?|multi-?agent/i.test(prompt)) return modelProfiles.planner;
+  if (intents.has("localization_review") || intents.has("frontend_review")) return modelProfiles.reviewer;
   if (
     prompt.length > 600
     || /复杂|长期|长任务|多步骤|重构|架构|全量|多代理|分工|并行|性能|瓶颈|卡顿|延迟|实际体验|体验不好|用户交互|交互流程|end.?to.?end|architecture|refactor|migration|parallel agents?|multi-?agent|performance|latency|bottleneck/i.test(prompt)
@@ -100,6 +110,10 @@ function autoProfile(prompt: string, permissionMode: string | undefined, activeS
   ) {
     return modelProfiles["long-horizon"];
   }
+  if (
+    intents.has("general_review")
+    || /review|审查|代码审查|检查|verify|验证|测试|test/i.test(prompt)
+  ) return modelProfiles.reviewer;
   return modelProfiles.interactive;
 }
 
@@ -108,12 +122,13 @@ export function routeModelForPrompt(options: {
   permissionMode?: string;
   settings: Partial<DesktopSettings>;
   activeSkillIds?: string[];
+  routeIntents?: RouteIntentMatch[];
 }): ModelRouteDecision {
   const mode = (options.settings.modelRoutingMode || "auto") as ModelRoutingMode;
   const selectedProvider = options.settings.provider || "deepseek";
   const profile = mode === "manual" || selectedProvider !== "deepseek"
     ? manualProfile(options.settings)
-    : autoProfile(options.prompt, options.permissionMode, options.activeSkillIds || []);
+    : autoProfile(options.prompt, options.permissionMode, options.activeSkillIds || [], options.routeIntents);
   const provider = selectedProvider === "deepseek" ? profile.provider : selectedProvider;
   const model = provider === "deepseek" ? profile.model : options.settings.model || profile.model;
   const apiModel = provider === "deepseek" ? apiModelForDeepSeek(model) : model;
