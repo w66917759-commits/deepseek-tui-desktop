@@ -4,14 +4,16 @@ This desktop app exposes an optional local HTTP bridge for a phone app. It does 
 
 The bridge is disabled by default. Enable it in the `远程` inspector.
 
+The local bridge is not a public address strategy. Normal users will not have a public Bridge URL. For public mobile use, the desktop app should connect outbound to a cloud relay or an automatically provisioned HTTPS tunnel, and the phone should talk to that relay over HTTPS. `127.0.0.1` is only useful on the desktop machine itself.
+
 ## Security Model
 
 - Every endpoint except `GET /api/v1/health` requires a token.
 - Read-only progress and remote control are separate toggles.
-- `127.0.0.1` is the default bind host. Use `0.0.0.0 / LAN` only when the phone app needs same-network access.
+- `127.0.0.1` is the default bind host and is only reachable from the desktop machine. Use `0.0.0.0 / LAN` only for same-network internal testing.
 - Desktop admin actions use the bridge token. Phone clients pair once and then use a device token.
 - API keys are not persisted by this bridge. Mobile-started sessions use saved desktop settings and process environment.
-- For access outside the same LAN, add a relay service or tunnel rather than exposing the port directly to the public internet.
+- For access outside the same LAN, add a product-managed relay service or HTTPS tunnel rather than asking users to expose the port directly to the public internet.
 
 Authentication headers:
 

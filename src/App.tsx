@@ -977,7 +977,7 @@ const uiCopy = {
       login: "登录并绑定桌面端",
       logout: "退出登录",
       pairTitle: "手机配对",
-      pairHint: "手机端使用同一账号和配对码完成绑定。",
+      pairHint: "手机端使用同一账号和配对码完成绑定；普通用户不需要自备公网地址。",
       startPairing: "生成配对码",
       pairingCode: "配对码",
       pairingExpires: "过期时间",
@@ -996,9 +996,10 @@ const uiCopy = {
       bridgeRunning: "手机控制已运行",
       bridgeStopped: "手机控制未启动",
       tokenRequired: "手机控制需要访问密钥。",
-      connectionAddress: "连接地址",
+      connectionAddress: "本地 Bridge 地址",
       accessKey: "访问密钥",
-      copyLanUrl: "复制连接地址",
+      localBridgeNote: "这里显示的是桌面本机/局域网地址，不是公开手机网页可用的公网地址。127.0.0.1 只能被这台电脑自己访问；正式发布需要云端中继或自动 HTTPS tunnel。",
+      copyLanUrl: "复制本地地址",
       copyToken: "复制访问密钥",
       saveApply: "保存手机控制",
       restart: "重启",
@@ -1472,7 +1473,7 @@ const uiCopy = {
       login: "Sign in and bind desktop",
       logout: "Sign out",
       pairTitle: "Phone pairing",
-      pairHint: "Use the same account plus this code in the phone app to pair.",
+      pairHint: "Use the same account plus this code in the phone app. Normal users should not bring a public address.",
       startPairing: "Generate pairing code",
       pairingCode: "Pairing code",
       pairingExpires: "Expires",
@@ -1491,9 +1492,10 @@ const uiCopy = {
       bridgeRunning: "Mobile control running",
       bridgeStopped: "Mobile control stopped",
       tokenRequired: "Mobile control requires an access key.",
-      connectionAddress: "Connection address",
+      connectionAddress: "Local Bridge address",
       accessKey: "Access key",
-      copyLanUrl: "Copy address",
+      localBridgeNote: "This is a desktop-local or LAN address, not a public mobile-web Bridge address. 127.0.0.1 is only reachable from this computer; public release needs a cloud relay or automatic HTTPS tunnel.",
+      copyLanUrl: "Copy local address",
       copyToken: "Copy access key",
       saveApply: "Save mobile control",
       restart: "Restart",
@@ -7011,6 +7013,14 @@ function App() {
                   <strong>{remoteStatus?.running ? t.remote.bridgeRunning : t.remote.bridgeStopped}</strong>
                 </div>
                 <small>{remoteStatus?.error || t.remote.tokenRequired}</small>
+              </section>
+
+              <section className="remote-summary warning">
+                <div>
+                  <CircleAlert size={15} aria-hidden />
+                  <strong>{t.remote.connectionAddress}</strong>
+                </div>
+                <small>{t.remote.localBridgeNote}</small>
               </section>
 
               <div className="copy-row">

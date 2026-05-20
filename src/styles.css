@@ -2699,6 +2699,16 @@ label {
   background: #ffffff;
 }
 
+.remote-summary.warning {
+  border-color: #f4c790;
+  background: #fff8ed;
+}
+
+.remote-summary.warning div,
+.remote-summary.warning small {
+  color: #8a5318;
+}
+
 .remote-summary div {
   display: flex;
   align-items: center;
