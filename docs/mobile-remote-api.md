@@ -1,230 +1,135 @@
 # Mobile Remote API
 
-This desktop app exposes an optional local HTTP bridge for a phone app. It does not move the agent runtime to mobile. The Mac keeps running Electron, the harness, PTY, and DeepSeek TUI; mobile clients only observe progress and, when explicitly allowed, send control commands to the desktop session.
+DeepSeek TUI Desktop remains the runtime host. The Mac keeps running Electron, the harness, PTY, and DeepSeek TUI; mobile clients only observe progress and, when explicitly allowed, send control commands to the desktop session.
 
-The bridge is disabled by default. Enable it in the `远程` inspector.
-
-The local bridge is not a public address strategy. Normal users will not have a public Bridge URL. For public mobile use, the desktop app should connect outbound to a cloud relay or an automatically provisioned HTTPS tunnel, and the phone should talk to that relay over HTTPS. `127.0.0.1` is only useful on the desktop machine itself.
+For public mobile use, phones do not connect to `127.0.0.1` or a user-provided public Bridge URL. The desktop connects outbound to DeepSeek TUI Relay over WebSocket, and the phone connects to the same Relay over HTTPS. The local HTTP Bridge remains available for development and LAN diagnostics only.
 
 ## Security Model
 
-- Every endpoint except `GET /api/v1/health` requires a token.
-- Read-only progress and remote control are separate toggles.
-- `127.0.0.1` is the default bind host and is only reachable from the desktop machine. Use `0.0.0.0 / LAN` only for same-network internal testing.
-- Desktop admin actions use the bridge token. Phone clients pair once and then use a device token.
-- API keys are not persisted by this bridge. Mobile-started sessions use saved desktop settings and process environment.
-- For access outside the same LAN, add a product-managed relay service or HTTPS tunnel rather than asking users to expose the port directly to the public internet.
+- V1 pairing uses only a six digit pairing code. Email/account id is legacy metadata and is not required for pairing.
+- Pairing codes are one-time, valid for ten minutes, and stored as hashes before they are sent to Relay.
+- Successful pairing returns a long-lived `deviceToken` to the phone. The desktop and Relay store only token hashes.
+- Read-only status and remote control remain separate: paired devices can refresh status, but session start/stop/input requires `mobileRemoteControlEnabled`.
+- The desktop never exposes API keys to Relay or mobile clients. Mobile-started sessions use saved desktop settings and process environment.
 
-Authentication headers:
+## Relay API
 
-```http
-Authorization: Bearer <token>
-```
-
-or:
+### Desktop Connect
 
 ```http
-x-deepseek-bridge-token: <token>
+WSS /desktop/connect?desktopId=<desktop-id>&secret=<relay-secret>
 ```
 
-Paired phone auth:
+The desktop sends:
+
+```json
+{
+  "type": "desktop.hello",
+  "desktopId": "desktop_xxx",
+  "secret": "local-relay-secret",
+  "status": {}
+}
+```
+
+When the user generates a pairing code, the desktop sends:
+
+```json
+{
+  "type": "pairing.start",
+  "desktopId": "desktop_xxx",
+  "relaySessionId": "relay_xxx",
+  "codeHash": "sha256-hex",
+  "codePreview": "123 456",
+  "expiresAt": "2026-05-20T10:10:00.000Z",
+  "createdAt": "2026-05-20T10:00:00.000Z"
+}
+```
+
+Relay replies to the desktop with `device.paired` after the phone pairs. The payload includes public device metadata and a device-token hash, never the raw token.
+
+### Pair Phone
+
+```http
+POST /api/v1/pair
+content-type: application/json
+
+{
+  "pairingCode": "123456",
+  "deviceName": "West iPhone",
+  "platform": "web",
+  "clientDeviceId": "web-installation-id"
+}
+```
+
+Returns:
+
+```json
+{
+  "ok": true,
+  "deviceToken": "phone-secret-token",
+  "deviceId": "device_xxx",
+  "desktopId": "desktop_xxx",
+  "relaySessionId": "relay_xxx"
+}
+```
+
+### Status And Commands
+
+Phone requests use:
 
 ```http
 Authorization: Bearer <device-token>
 ```
 
-or:
+Endpoints:
 
-```http
-x-deepseek-device-token: <device-token>
-```
+- `GET /api/v1/status`
+- `POST /api/v1/session/start`
+- `POST /api/v1/session/stop`
+- `POST /api/v1/terminal/input`
 
-For SSE clients that cannot set headers, `GET /api/v1/events?token=<token>` is also accepted.
+Relay forwards command messages to the paired desktop WebSocket and returns the desktop result. Relay does not execute DeepSeek TUI.
 
-## Endpoints
+## Desktop Local Bridge
 
-### Health
+The local bridge still exposes development endpoints such as:
 
-```http
-GET /api/v1/health
-```
+- `GET /api/v1/status`
+- `GET /api/v1/events`
+- `POST /api/v1/auth/pairing/start`
+- `POST /api/v1/auth/pair`
+- `POST /api/v1/session/start`
+- `POST /api/v1/session/stop`
+- `POST /api/v1/terminal/input`
 
-Returns `{ ok: true, requiresAuth: true }`.
+These endpoints are token-protected and are intended for same-machine or same-LAN testing. Public mobile UX should use Relay and should not ask users to paste `127.0.0.1`, LAN IPs, or HTTPS tunnel URLs.
 
-### Status
+## Local Storage
 
-```http
-GET /api/v1/status
-```
+Desktop `remote-auth.json` stores:
 
-Returns bridge state, desktop harness state, active session metadata, terminal preview, and the latest update notice. The token is never returned over HTTP.
+- `desktopId`
+- `activePairing`
+- `devices[]`
+- `relaySecret`
+- `lastRelayState`
+- optional legacy `account`
 
-### Desktop Login
+Phone local storage stores:
 
-Desktop admin token required.
-
-```http
-POST /api/v1/auth/login
-content-type: application/json
-
-{
-  "accountId": "user@example.com",
-  "email": "user@example.com",
-  "displayName": "West"
-}
-```
-
-The desktop stores the account identity locally under Electron `userData`. This is the matching key used by phone pairing and update-push account targeting.
-
-### Start Phone Pairing
-
-Desktop admin token required.
-
-```http
-POST /api/v1/auth/pairing/start
-```
-
-Returns a six-digit pairing code, desktop id, account id, and expiry time. The code is valid for ten minutes.
-
-### Pair Phone
-
-No bridge token required; the pairing code is the temporary credential.
-
-```http
-POST /api/v1/auth/pair
-content-type: application/json
-
-{
-  "accountId": "user@example.com",
-  "pairingCode": "123456",
-  "deviceName": "West iPhone",
-  "platform": "ios",
-  "clientDeviceId": "ios-installation-id",
-  "pushProvider": "apns",
-  "pushToken": "apns-or-fcm-device-token"
-}
-```
-
-Returns a `deviceToken`. The phone app should store it securely and use it for `status`, `events`, and remote-control calls. The desktop keeps the paired device entry so update push matching can target the same account and known device ids.
-
-### Auth State
-
-```http
-GET /api/v1/auth/state
-```
-
-Returns the signed-in account, desktop id, active pairing state, and paired devices.
-
-### Revoke Phone
-
-Desktop admin token required.
-
-```http
-POST /api/v1/devices/revoke
-content-type: application/json
-
-{
-  "deviceId": "device_xxx"
-}
-```
-
-### Live Events
-
-```http
-GET /api/v1/events
-```
-
-Server-Sent Events stream. Event names:
-
-- `snapshot`: initial bridge and session state.
-- `terminal-replay`: recent terminal buffer for late subscribers.
-- `terminal`: live PTY output.
-- `terminal-exit`: PTY exit payload.
-- `bridge-status`: updated bridge/session state.
-- `update-notice`: update notification payload.
-- `bridge-error`: bridge server error payload.
-
-### Start Session
-
-Requires `mobileRemoteControlEnabled`.
-
-```http
-POST /api/v1/session/start
-content-type: application/json
-
-{
-  "action": "exec",
-  "prompt": "Run tests and summarize the result"
-}
-```
-
-Allowed `action` values are `tui`, `continue`, `doctor`, `setup`, `mcp-init`, `sessions`, `exec`, and `plan`.
-
-### Terminal Input
-
-Requires `mobileRemoteControlEnabled`.
-
-```http
-POST /api/v1/terminal/input
-content-type: application/json
-
-{
-  "data": "/status\n"
-}
-```
-
-### Upsert Skill
-
-Requires `mobileRemoteControlEnabled`.
-
-This endpoint is intended for phone or voice clients that turn a spoken workflow into a reusable Skill. The desktop writes a `SKILL.md` under the active skills root and enables it by default.
-
-```http
-POST /api/v1/skills/upsert
-content-type: application/json
-
-{
-  "name": "Daily report review",
-  "description": "Use when preparing or reviewing a daily report before sending.",
-  "content": "---\nname: daily-report-review\ndescription: Use when preparing or reviewing a daily report before sending.\n---\n\n# Daily Report Review\n\n..."
-}
-```
-
-Set `"enable": false` to write the Skill without adding it to `enabledSkills`.
-
-### Stop Session
-
-Requires `mobileRemoteControlEnabled`.
-
-```http
-POST /api/v1/session/stop
-```
-
-### Update Push Notification
-
-Requires `updatePushEnabled`.
-
-```http
-POST /api/v1/updates/push
-content-type: application/json
-
-{
-  "accountId": "user@example.com",
-  "version": "0.1.1",
-  "title": "DeepSeek TUI Desktop update",
-  "body": "A new signed Mac build is available.",
-  "url": "https://example.com/releases/0.1.1"
-}
-```
-
-If `accountId` is present, it must match the desktop login account. The desktop shows a native notification when supported and forwards an `update-notice` SSE event to connected mobile clients. The notice also includes `matchedDeviceIds`, so a future cloud relay can confirm which paired phone records match the push account.
+- `relayUrl`
+- `deviceToken`
+- `deviceId`
+- `desktopId`
+- `deviceName`
+- `clientDeviceId`
 
 ## Phone App Flow
 
-1. User signs into a push account in the desktop `远程` panel.
-2. User enables the bridge and generates a phone pairing code.
-3. Phone app signs into the same account and calls `POST /api/v1/auth/pair` with the pairing code.
-4. Phone app stores the returned device token securely.
-5. Phone app calls `GET /api/v1/status` and subscribes to `GET /api/v1/events` with the device token.
-6. If remote control is enabled, phone app can call session/input/stop endpoints or `POST /api/v1/skills/upsert` with the device token.
-7. Release infrastructure can call `POST /api/v1/updates/push` with the account id to notify the desktop and matched phone records.
+1. User enables mobile control in the desktop `远程` panel.
+2. Desktop connects to Relay and shows Relay status.
+3. User generates a six digit pairing code.
+4. Phone opens the mobile page and enters only the pairing code plus device name.
+5. Relay validates the code hash, binds the phone to the desktop session, returns `deviceToken`, and notifies the desktop with the token hash.
+6. Phone refreshes status through Relay.
+7. If desktop remote control is enabled, the phone can start/stop sessions and send terminal input through Relay.

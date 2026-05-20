@@ -167,6 +167,7 @@ declare global {
     mobileBridgeHost: string;
     mobileBridgePort: number;
     mobileBridgeToken: string;
+    mobileRelayUrl: string;
     mobileRemoteControlEnabled: boolean;
     updatePushEnabled: boolean;
   }
@@ -1022,6 +1023,14 @@ declare global {
     lanUrl: string;
     token?: string;
     tokenPreview: string;
+    relay?: {
+      enabled: boolean;
+      connected: boolean;
+      url: string;
+      sessionId: string;
+      lastConnectedAt: string;
+      lastError: string;
+    };
     mobileRemoteControlEnabled: boolean;
     updatePushEnabled: boolean;
     auth: RemoteAuthState;
@@ -1090,13 +1099,16 @@ declare global {
     codePreview: string;
     expiresAt: string;
     createdAt: string;
+    relaySessionId?: string;
   }
 
   interface RemoteDevice {
     id: string;
     name: string;
     platform: string;
-    accountId: string;
+    accountId?: string;
+    desktopId?: string;
+    relaySessionId?: string;
     pushProvider?: string;
     pushTokenPreview?: string;
     pairedAt: string;
@@ -1124,8 +1136,9 @@ declare global {
       code: string;
       codePreview: string;
       expiresAt: string;
-      accountId: string;
+      accountId?: string;
       desktopId: string;
+      relaySessionId?: string;
     };
   }
 }

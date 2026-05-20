@@ -27,6 +27,7 @@ const previewSettings: DesktopSettings = {
   mobileBridgeHost: "127.0.0.1",
   mobileBridgePort: 8765,
   mobileBridgeToken: "browser-preview-token",
+  mobileRelayUrl: "https://deepseektuidesktop.cn",
   mobileRemoteControlEnabled: false,
   updatePushEnabled: false
 };
@@ -548,6 +549,14 @@ export function createPreviewBridge(): Window["deepseekDesktop"] {
     lanUrl: `http://127.0.0.1:${previewSettings.mobileBridgePort}`,
     token: previewSettings.mobileBridgeToken,
     tokenPreview: "browser...oken",
+    relay: {
+      enabled: previewSettings.mobileBridgeEnabled,
+      connected: previewSettings.mobileBridgeEnabled,
+      url: previewSettings.mobileRelayUrl,
+      sessionId: previewSettings.mobileBridgeEnabled ? "relay_preview" : "",
+      lastConnectedAt: previewSettings.mobileBridgeEnabled ? new Date().toISOString() : "",
+      lastError: ""
+    },
     mobileRemoteControlEnabled: previewSettings.mobileRemoteControlEnabled,
     updatePushEnabled: previewSettings.updatePushEnabled,
     auth: previewAuth,

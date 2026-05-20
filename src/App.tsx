@@ -29,7 +29,6 @@ import {
   Layers3,
   Link2,
   LoaderCircle,
-  LogOut,
   MessageSquare,
   Palette,
   Plug,
@@ -250,6 +249,7 @@ const defaultSettings: DesktopSettings = {
   mobileBridgeHost: "127.0.0.1",
   mobileBridgePort: 8765,
   mobileBridgeToken: "",
+  mobileRelayUrl: "https://deepseektuidesktop.cn",
   mobileRemoteControlEnabled: false,
   updatePushEnabled: false
 };
@@ -970,23 +970,23 @@ const uiCopy = {
       failed: "定时任务操作失败"
     },
     remote: {
-      accountTitle: "手机控制账号",
-      accountLoggedOut: "未登录推送账号",
-      accountPlaceholder: "邮箱 / 用户 ID",
-      displayNamePlaceholder: "显示名称（可选）",
-      login: "登录并绑定桌面端",
-      logout: "退出登录",
+      accountTitle: "Relay 设备标识",
+      accountLoggedOut: "本机桌面端",
+      accountPlaceholder: "Legacy 账号（可选）",
+      displayNamePlaceholder: "Legacy 显示名（可选）",
+      login: "保存 Legacy 账号",
+      logout: "清除 Legacy 账号",
       pairTitle: "手机配对",
-      pairHint: "手机端使用同一账号和配对码完成绑定；普通用户不需要自备公网地址。",
+      pairHint: "手机端只输入这个 6 位配对码即可绑定；普通用户不需要账号或公网地址。",
       startPairing: "生成配对码",
       pairingCode: "配对码",
       pairingExpires: "过期时间",
       noDevices: "暂无已配对手机",
       pairedDevices: "已配对手机",
       revokeDevice: "移除设备",
-      loginRequired: "请先登录推送账号",
-      loginSaved: "推送账号已登录",
-      logoutSaved: "已退出推送账号",
+      loginRequired: "Legacy 账号不是配对必填项",
+      loginSaved: "Legacy 账号已保存",
+      logoutSaved: "Legacy 账号已清除",
       pairingStarted: "配对码已生成",
       pairingFailed: "配对码生成失败",
       deviceRevoked: "设备已移除",
@@ -995,9 +995,12 @@ const uiCopy = {
       allowUpdates: "允许自动更新推送通知",
       bridgeRunning: "手机控制已运行",
       bridgeStopped: "手机控制未启动",
-      tokenRequired: "手机控制需要访问密钥。",
+      tokenRequired: "开启手机控制后桌面端会主动连接 Relay。",
+      relayUrl: "Relay 地址",
+      relayConnected: "Relay 已连接",
+      relayDisconnected: "Relay 未连接",
       connectionAddress: "本地 Bridge 地址",
-      accessKey: "访问密钥",
+      accessKey: "本地访问密钥",
       localBridgeNote: "这里显示的是桌面本机/局域网地址，不是公开手机网页可用的公网地址。127.0.0.1 只能被这台电脑自己访问；正式发布需要云端中继或自动 HTTPS tunnel。",
       copyLanUrl: "复制本地地址",
       copyToken: "复制访问密钥",
@@ -1466,23 +1469,23 @@ const uiCopy = {
       failed: "Scheduled task action failed"
     },
     remote: {
-      accountTitle: "Mobile control account",
-      accountLoggedOut: "No push account signed in",
-      accountPlaceholder: "Email / user ID",
-      displayNamePlaceholder: "Display name (optional)",
-      login: "Sign in and bind desktop",
-      logout: "Sign out",
+      accountTitle: "Relay device identity",
+      accountLoggedOut: "This desktop",
+      accountPlaceholder: "Legacy account (optional)",
+      displayNamePlaceholder: "Legacy display name (optional)",
+      login: "Save legacy account",
+      logout: "Clear legacy account",
       pairTitle: "Phone pairing",
-      pairHint: "Use the same account plus this code in the phone app. Normal users should not bring a public address.",
+      pairHint: "Enter this six digit code on the phone. Normal users do not need an account or public address.",
       startPairing: "Generate pairing code",
       pairingCode: "Pairing code",
       pairingExpires: "Expires",
       noDevices: "No paired phones yet",
       pairedDevices: "Paired phones",
       revokeDevice: "Remove device",
-      loginRequired: "Sign in to the push account first",
-      loginSaved: "Push account signed in",
-      logoutSaved: "Signed out from push account",
+      loginRequired: "Legacy account is not required for pairing",
+      loginSaved: "Legacy account saved",
+      logoutSaved: "Legacy account cleared",
       pairingStarted: "Pairing code generated",
       pairingFailed: "Pairing code failed",
       deviceRevoked: "Device removed",
@@ -1491,9 +1494,12 @@ const uiCopy = {
       allowUpdates: "Allow automatic update push notifications",
       bridgeRunning: "Mobile control running",
       bridgeStopped: "Mobile control stopped",
-      tokenRequired: "Mobile control requires an access key.",
+      tokenRequired: "When mobile control is enabled, the desktop connects to Relay automatically.",
+      relayUrl: "Relay URL",
+      relayConnected: "Relay connected",
+      relayDisconnected: "Relay disconnected",
       connectionAddress: "Local Bridge address",
-      accessKey: "Access key",
+      accessKey: "Local access key",
       localBridgeNote: "This is a desktop-local or LAN address, not a public mobile-web Bridge address. 127.0.0.1 is only reachable from this computer; public release needs a cloud relay or automatic HTTPS tunnel.",
       copyLanUrl: "Copy local address",
       copyToken: "Copy access key",
@@ -2559,8 +2565,6 @@ function App() {
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState<StatusState>({ type: "ready" });
   const [remoteMessage, setRemoteMessage] = useState("");
-  const [loginAccount, setLoginAccount] = useState("");
-  const [loginDisplayName, setLoginDisplayName] = useState("");
   const [pairingCode, setPairingCode] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [agentPrompt, setAgentPrompt] = useState("");
@@ -3158,13 +3162,6 @@ function App() {
     setAutomationMessage("");
     setAutomationMessageKind("info");
   }, [toolPage]);
-
-  useEffect(() => {
-    const account = remoteStatus?.auth.account;
-    if (!account) return;
-    setLoginAccount((current) => current || account.email || account.accountId);
-    setLoginDisplayName((current) => current || account.displayName || "");
-  }, [remoteStatus?.auth.account]);
 
   useEffect(() => {
     if (mainView !== "chat") {
@@ -4795,28 +4792,6 @@ function App() {
     setSettings(result.settings);
     setRemoteStatus(result.status);
     setRemoteMessage(t.remote.tokenUpdated);
-  }, [desktop, t]);
-
-  const loginRemoteAccount = useCallback(async () => {
-    const accountId = loginAccount.trim();
-    if (!accountId) {
-      setRemoteMessage(t.remote.loginRequired);
-      return;
-    }
-    const result = await desktop.loginRemoteAccount({
-      accountId,
-      email: accountId,
-      displayName: loginDisplayName.trim()
-    });
-    if (result.status) setRemoteStatus(result.status);
-    setRemoteMessage(result.ok ? t.remote.loginSaved : result.error || t.remote.loginRequired);
-  }, [desktop, loginAccount, loginDisplayName, t]);
-
-  const logoutRemoteAccount = useCallback(async () => {
-    const result = await desktop.logoutRemoteAccount();
-    if (result.status) setRemoteStatus(result.status);
-    setPairingCode("");
-    setRemoteMessage(result.ok ? t.remote.logoutSaved : result.error || t.remote.logoutSaved);
   }, [desktop, t]);
 
   const startRemotePairing = useCallback(async () => {
@@ -6886,36 +6861,28 @@ function App() {
               <section className="remote-summary">
                 <div>
                   <UserRound size={15} aria-hidden />
-                  <strong>{remoteStatus?.auth.account?.displayName || remoteStatus?.auth.account?.accountId || t.remote.accountLoggedOut}</strong>
+                  <strong>{t.remote.accountLoggedOut}</strong>
                 </div>
                 <small>{remoteStatus?.auth.desktopId || ""}</small>
               </section>
 
               <label>
-                {t.remote.accountTitle}
+                {t.remote.relayUrl}
                 <input
-                  value={loginAccount}
-                  onChange={(event) => setLoginAccount(event.target.value)}
-                  placeholder={t.remote.accountPlaceholder}
+                  value={settings.mobileRelayUrl}
+                  onChange={(event) => updateSetting("mobileRelayUrl", event.target.value)}
+                  placeholder="https://deepseektuidesktop.cn"
                   spellCheck={false}
                 />
               </label>
-              <input
-                value={loginDisplayName}
-                onChange={(event) => setLoginDisplayName(event.target.value)}
-                placeholder={t.remote.displayNamePlaceholder}
-                spellCheck={false}
-              />
-              <div className="remote-actions">
-                <button type="button" className="primary" onClick={loginRemoteAccount}>
-                  <UserRound size={16} aria-hidden />
-                  {t.remote.login}
-                </button>
-                <button type="button" className="secondary" onClick={logoutRemoteAccount} disabled={!remoteStatus?.auth.loggedIn}>
-                  <LogOut size={16} aria-hidden />
-                  {t.remote.logout}
-                </button>
-              </div>
+
+              <section className={remoteStatus?.relay?.connected ? "remote-summary relay-online" : "remote-summary warning"}>
+                <div>
+                  <span className={`dot ${remoteStatus?.relay?.connected ? "live" : ""}`} />
+                  <strong>{remoteStatus?.relay?.connected ? t.remote.relayConnected : t.remote.relayDisconnected}</strong>
+                </div>
+                <small>{remoteStatus?.relay?.lastError || remoteStatus?.relay?.url || t.remote.tokenRequired}</small>
+              </section>
 
               <section className="remote-summary">
                 <div>
@@ -6931,7 +6898,7 @@ function App() {
                   <small>{t.remote.pairingExpires}: {remoteStatus?.auth.pairing?.expiresAt || ""}</small>
                 </div>
               ) : null}
-              <button type="button" className="secondary wide" onClick={startRemotePairing} disabled={!remoteStatus?.auth.loggedIn}>
+              <button type="button" className="secondary wide" onClick={startRemotePairing} disabled={!remoteStatus?.relay?.connected}>
                 <Link2 size={16} aria-hidden />
                 {t.remote.startPairing}
               </button>
@@ -7039,14 +7006,11 @@ function App() {
               </div>
 
               <div className="endpoint-list">
+                <code>WSS /desktop/connect</code>
+                <code>POST /api/v1/pair</code>
                 <code>GET /api/v1/status</code>
-                <code>POST /api/v1/auth/login</code>
-                <code>POST /api/v1/auth/pair</code>
-                <code>GET /api/v1/events</code>
                 <code>POST /api/v1/session/start</code>
                 <code>POST /api/v1/terminal/input</code>
-                <code>POST /api/v1/skills/upsert</code>
-                <code>POST /api/v1/updates/push</code>
               </div>
 
               {remoteStatus?.lastUpdateNotice ? (

@@ -19,7 +19,7 @@ The desktop app runs the upstream `deepseek` executable through a local harness 
 - Skills are materialized as local `*/SKILL.md` directories under Electron `userData/skills` or a custom skills root. Presets, user-created skills, imported external skills, and remote-submitted skills share the same directory contract.
 - Enabled MCP presets are materialized as `mcp.presets.json` under Electron `userData`, then exposed to the runtime as `DEEPSEEK_MCP_CONFIG`.
 - The desktop composer mirrors the upstream mode names as `Plan / Agent / YOLO`. Plan prompts still use a non-mutating plan-only prefix for one-shot runs, while YOLO launches the upstream CLI with `--yolo`.
-- Optional mobile bridge lives in Electron main and wraps the harness with token-protected HTTP/SSE endpoints. It can stream progress to a phone app, accept remote control commands when explicitly enabled, receive generated Skill drafts from a phone/voice client, emit update push notifications, and maintain a local login/device-pairing registry for matching desktop and phone clients. The bridge is local infrastructure; public mobile use needs a product-managed relay so users are not asked to provide their own public address.
+- Optional mobile control lives in Electron main and wraps the harness with token-protected local HTTP/SSE endpoints plus an outbound Relay WebSocket. It can stream progress to a phone app, accept remote control commands when explicitly enabled, emit update push notifications, and maintain a local device-pairing registry for matching desktop and phone clients. The local bridge is development infrastructure; public mobile use goes through the product-managed Relay so users are not asked to provide their own public address.
 
 ```mermaid
 flowchart LR
@@ -33,7 +33,8 @@ flowchart LR
   Harness --> MCP["Generated MCP Config"]
   Harness --> Skills["Generated Skills"]
   Main --> Remote["Mobile Remote Bridge"]
-  Remote --> Phone["Phone App / Updater"]
+  Remote --> Relay["DeepSeek TUI Relay"]
+  Relay --> Phone["Phone App"]
   Remote --> Harness
 ```
 
@@ -52,6 +53,6 @@ Windows x64 installers use NSIS. Local tester builds can be signed with the gene
 - The app currently assumes the upstream CLI command grammar. If a command changes, the launch builder in `electron/harness.cjs` is the single integration point to update.
 - MCP configuration is passed through `DEEPSEEK_MCP_CONFIG`; the desktop UI now toggles popular presets and shows startup commands, auth hints, categories, and npm download metadata, but does not yet expose a full JSON editor or per-server connection test.
 - Token-based MCP presets rely on environment variables such as `GITHUB_PERSONAL_ACCESS_TOKEN`, `NOTION_TOKEN`, `SLACK_BOT_TOKEN`, `STRIPE_SECRET_KEY`, and `PANEL_ACCESS_TOKEN`.
-- The mobile bridge is a local/LAN interface, not a cloud relay. Remote access outside the LAN must use a product-managed relay or automatic HTTPS tunnel; ordinary users should not be asked to own a public Bridge URL.
-- The login service is local-first: it records the desktop account id, paired phone devices, and device-token hashes under Electron `userData`. A production push service can reuse the same account/device contract behind a cloud relay.
+- The local mobile bridge is a local/LAN interface, not a public access strategy. Remote access outside the LAN uses DeepSeek TUI Relay; ordinary users should not be asked to own a public Bridge URL.
+- The mobile pairing store is local-first: it records the desktop id, active pairing metadata, paired phone devices, relay secret, and device-token hashes under Electron `userData`. Legacy account metadata can remain for old update-push paths, but it is not required for v1 phone pairing.
 - Unsigned or locally self-signed packages are suitable for local testing only. Public distribution needs Developer ID signing/notarization on macOS and a trusted Windows code-signing certificate.

@@ -2709,6 +2709,16 @@ label {
   color: #8a5318;
 }
 
+.remote-summary.relay-online {
+  border-color: #b7dfc5;
+  background: #effaf3;
+}
+
+.remote-summary.relay-online div,
+.remote-summary.relay-online small {
+  color: #137344;
+}
+
 .remote-summary div {
   display: flex;
   align-items: center;
